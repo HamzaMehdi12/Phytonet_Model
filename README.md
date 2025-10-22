@@ -154,6 +154,10 @@ From ~2.85 → ~1.05 (stable, smooth convergence)
    <img width="1000" height="800" alt="confusion_matrix_test" src="https://github.com/user-attachments/assets/1d4518c9-8243-4e0c-89e5-c79c67841ec5" alt="Training Results" width="80%"/>
 </p>
 
+<p align="center">
+   ![test_result](https://github.com/user-attachments/assets/dc5f61f7-50ad-45a1-9f00-f784e57d8cce)
+</p>
+
 ---
 
 ## 🛠️ Installation
