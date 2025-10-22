@@ -170,77 +170,14 @@ python -m venv venv
 source venv/bin/activate  # (Windows: venv\Scripts\activate)
 
 pip install -r requirements.txt
+```
 
----
-
-## 🧮 Loss Function
-
-**Total Loss**  
-\[
-L_{total} = λ_{cls}·L_{cls} + λ_{obj}·L_{obj} + λ_{box}·L_{box}
-\]
-
-| Component | Description | Formula |
-|------------|--------------|----------|
-| **Classification (L_cls)** | Focal Loss with class weights [3.0, 3.0] | \( L_{cls} = -α(1-p_t)^γ \log(p_t) \) |
-| **Objectness (L_obj)** | Binary Cross-Entropy | \( L_{obj} = -[y\log(p) + (1-y)\log(1-p)] \) |
-| **Bounding Box (L_box)** | IoU + Smooth L1 | \( 0.5·L_{IoU} + 0.5·L_{SmoothL1} \) |
-
-### 🧭 Progressive Training Schedule
-| Phase | Epochs | λ_cls | γ | Conf. Thresh | Focus |
-|-------|--------|-------|---|--------------|-------|
-| 1 | 1–29 | 4.0 | 2.0 | 0.2 | Initial learning |
-| 2 | 30–59 | 4.5 | 2.5 | 0.4 | Classification boost |
-| 3 | 60–89 | 5.5 | 3.0 | 0.6 | Hard example mining |
-| 4 | 90–149 | 6.5 | 3.5 | 0.7 | Precision refinement |
-| 5 | 150–199 | 8.0 | 4.0 | 0.8 | Final tuning |
-| 6 | 200+ | 9.0 | 5.0 | 0.9 | Maximum precision |
-
----
-
-## 📈 Results
-
-<p align="center">
-  <img src="assets/results_metrics.png" alt="Training Results" width="80%">
-</p>
-
-| Metric | Score |
-|--------|-------|
-| **mAP** | 0.0261 |
-| **mAP@50** | 0.1273 |
-| **mAP@75** | 0.0000 |
-
-**Training Loss:**  
-From ~2.85 → ~1.05 (stable, smooth convergence)  
-**F1-Score:** 0.3–0.4 (balanced precision–recall)
-
-<p align="center">
-  <img src="assets/confusion_matrix.png" alt="Confusion Matrix" width="65%">
-</p>
-
----
-
-## 🛠️ Installation
-
-### 🔧 Prerequisites
-- Python ≥ 3.8  
-- CUDA ≥ 11.0 (for GPU training)  
-- 8GB RAM, 4GB+ GPU recommended  
-
-### 💻 Setup
-```bash
-git clone https://github.com/yourusername/tomato-detection.git
-cd tomato-detection
-
-python -m venv venv
-source venv/bin/activate  # (Windows: venv\Scripts\activate)
-
-pip install -r requirements.txt
-
-### Key Dependencies:
+### Key Dependencies
 torch>=2.0.0
 torchvision>=0.15.0
 albumentations>=1.3.0
 opencv-python>=4.7.0
 matplotlib>=3.7.0
 wandb>=0.15.0
+
+
