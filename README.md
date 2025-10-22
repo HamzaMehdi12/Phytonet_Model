@@ -154,12 +154,19 @@ From ~2.85 → ~1.05 (stable, smooth convergence)
    <img width="1000" height="800" alt="confusion_matrix_test" src="https://github.com/user-attachments/assets/1d4518c9-8243-4e0c-89e5-c79c67841ec5" />
 </p>
 
+---
+
+---
+## Detection Results and Analysis
+The following visual and quantitative results illustrate the model’s detection performance on real-world greenhouse imagery, focusing on accurate identification of tomatoes and stems under challenging lighting and occlusion conditions.
+
 <p align="center">
    <img width="1000" height="800" alt="detections" src="https://github.com/user-attachments/assets/dc5f61f7-50ad-45a1-9f00-f784e57d8cce" />
 </p>
 
 ---
 
+---
 ## 🛠️ Installation
 
 ### 🔧 Prerequisites
@@ -185,12 +192,15 @@ albumentations>=1.3.0
 opencv-python>=4.7.0
 matplotlib>=3.7.0
 wandb>=0.15.0
+---
 
+---
 ## Dataset Preparation
 Augmentations: flip, rotation, CLAHE, blur, brightness, gamma, scaling.
 ### Running Augmentations:
 python data_augment.py
-
+---
+---
 ## Training
 ### Basic
 python train.py --train_dir data/train --val_dir data/val --epochs 100 --batch_size 4
@@ -204,13 +214,18 @@ python train.py \
   --img_size 224 \
   --amp \
   --use_wandb
+---
 
+---
 ## Evaluation
 Metrics:
 mAP, mAP@50, Precision, Recall, F1
 Confusion Matrix
 Detection Visualizations
 
+---
+
+---
 ## Model Details
 | Property          | Description |
 | ----------------- | ----------- |
@@ -220,6 +235,9 @@ Detection Visualizations
 | FLOPs             | ~0.5 GFLOPs |
 | Inference (GPU)   | 15–20 ms    |
 
+---
+
+---
 ## Deoplyment
 | Device         | Precision | Inference | Notes          |
 | -------------- | --------- | --------- | -------------- |
@@ -228,6 +246,9 @@ Detection Visualizations
 | Raspberry Pi 4 | INT8      | 120ms     | Quantized      |
 | iPhone 13 Pro  | CoreML    | 65ms      | Mobile-ready   |
 
+---
+
+---
 ## Troubleshooting
 | Issue         | Fix                                     |
 | ------------- | --------------------------------------- |
@@ -236,23 +257,42 @@ Detection Visualizations
 | Low mAP       | Extend training / augment data          |
 | Slow training | Enable `--amp` / adjust workers         |
 
+---
+
+---
 ## Contributing
 1. Fork this repository
 2. Create a new branch
 3. Commit your feature/fix
 4. Submit a Pull Request
 
+---
+
+---
 ## License
 Licensed under the MIT License.
+---
 
+---
 ## Acknowldgement
 PyTorch — deep learning backbone\
 Albumentations — augmentation engine\
 COCO — dataset standard\
 Agricultural AI community — research support\
+---
 
+---
 ## Contact
 **Author: Muhammad Hamza Mehdi**\
 **Email: smhamzamehdi97@gmail.com**\
 **Institution: Ritsumeikan University Japan**\
 **Project Link: https://github.com/HamzaMehdi12/Phytonet_Model/blob/main/README.md**
+---
+
+---
+## Roadmap
+Multi-crop support (peppers, cucumbers)\
+Disease detection & ripeness classification\
+3D bounding boxes & temporal tracking\
+ROS + cloud-edge hybrid deployment\
+---
