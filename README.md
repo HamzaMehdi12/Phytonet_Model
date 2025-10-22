@@ -246,13 +246,13 @@ Detection Visualizations
 Licensed under the MIT License.
 
 ## Acknowldgement
-PyTorch — deep learning backbone
-Albumentations — augmentation engine
-COCO — dataset standard
-Agricultural AI community — research support
+PyTorch — deep learning backbone\
+Albumentations — augmentation engine\
+COCO — dataset standard\
+Agricultural AI community — research support\
 
 ## Contact
 **Author: Muhammad Hamza Mehdi**\
 **Email: smhamzamehdi97@gmail.com**\
 **Institution: Ritsumeikan University Japan**\
-**Project Link: **
+**Project Link: https://github.com/HamzaMehdi12/Phytonet_Model/blob/main/README.md**
