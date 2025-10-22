@@ -2,6 +2,16 @@
 
 > **Advanced deep learning pipeline for automated tomato and stem detection in agricultural environments, optimized for edge deployment.**
 
+### 🏷️ Project Badges
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0.0-red)
+![CUDA](https://img.shields.io/badge/CUDA-11.8-orange)
+![Dataset](https://img.shields.io/badge/Dataset-Greenhouse%20Tomatoes-lightgrey)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+![Status](https://img.shields.io/badge/Status-Completed-success)
+![mAP@50](https://img.shields.io/badge/mAP@50-0.1273-brightgreen)
+![Inference](https://img.shields.io/badge/Inference-15--20ms-blue)
+
 ## 📋 Table of Contents
 - [Overview](#-overview)
 - [Key Features](#-key-features)
