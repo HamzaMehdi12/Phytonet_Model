@@ -95,7 +95,6 @@ Input (224×224×3)
 Output: [B, A×(5+C), H, W]
 A=9, C=2 (stem/tomato)
 
-
 ---
 
 ## 🧮 Loss Function
