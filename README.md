@@ -2,16 +2,6 @@
 
 > **Advanced deep learning pipeline for automated tomato and stem detection in agricultural environments, optimized for edge deployment.**
 
----
-
-<p align="center">
-  <img src="assets/overview_banner.png" alt="System Overview" width="90%">
-  <br>
-  <em>HighAccuracyPhytoSparseNet – Intelligent detection for precision agriculture</em>
-</p>
-
----
-
 ## 📋 Table of Contents
 - [Overview](#-overview)
 - [Key Features](#-key-features)
@@ -82,7 +72,7 @@ Traditional object detection models struggle in agricultural contexts due to:
 ## 🏛️ Architecture
 
 <p align="center">
-  <img src="assets/model_architecture.png" alt="Model Architecture" width="80%">
+  <img width="4504" height="2179" alt="Phytonet Model" src="https://github.com/user-attachments/assets/cb4183b3-58f2-41ef-8e2f-0e4ec7c59392", alt="Model Architecture" width="80%">
 </p>
 
 Input (224×224×3)
