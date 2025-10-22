@@ -156,7 +156,6 @@ From ~2.85 → ~1.05 (stable, smooth convergence)
 
 ---
 
----
 ## Detection Results and Analysis
 The following visual and quantitative results illustrate the model’s detection performance on real-world greenhouse imagery, focusing on accurate identification of tomatoes and stems under challenging lighting and occlusion conditions.
 
@@ -164,7 +163,6 @@ The following visual and quantitative results illustrate the model’s detection
    <img width="1000" height="800" alt="detections" src="https://github.com/user-attachments/assets/dc5f61f7-50ad-45a1-9f00-f784e57d8cce" />
 </p>
 
----
 
 ---
 ## 🛠️ Installation
@@ -192,14 +190,14 @@ albumentations>=1.3.0
 opencv-python>=4.7.0
 matplotlib>=3.7.0
 wandb>=0.15.0
----
 
 ---
+
 ## Dataset Preparation
 Augmentations: flip, rotation, CLAHE, blur, brightness, gamma, scaling.
 ### Running Augmentations:
 python data_augment.py
----
+
 ---
 ## Training
 ### Basic
@@ -214,9 +212,17 @@ python train.py \
   --img_size 224 \
   --amp \
   --use_wandb
----
+
+### Training Summary
+| Stage   | Epochs  | λ_cls | γ   | Learning Rate | Notes                        |
+| :------ | :------ | :---- | :-- | :------------ | :--------------------------- |
+| Phase 1 | 1–29    | 4.0   | 2.0 | 1e-3 → 5e-4   | Early learning stabilization |
+| Phase 2 | 30–89   | 5.5   | 3.0 | 5e-4 → 1e-4   | Improved class balance       |
+| Phase 3 | 90–149  | 6.5   | 3.5 | 1e-4 → 5e-5   | Precision enhancement        |
+| Phase 4 | 150–199 | 8.0   | 4.0 | 5e-5          | Final tuning and convergence |
 
 ---
+
 ## Evaluation
 Metrics:
 mAP, mAP@50, Precision, Recall, F1
@@ -225,7 +231,29 @@ Detection Visualizations
 
 ---
 
+## Quantative Evaluation
+| Metric                 | Validation |  Test  | Description                                        |
+| :--------------------- | :--------: | :----: | :------------------------------------------------- |
+| **mAP**                |   0.0261   | 0.0261 | Mean Average Precision (across IoU thresholds)     |
+| **mAP@50**             |   0.1273   | 0.1273 | mAP at IoU ≥ 0.5 — mid-level overlap tolerance     |
+| **mAP@75**             |   0.0000   | 0.0000 | mAP at IoU ≥ 0.75 — strict overlap requirement     |
+| **Precision**          |   0.3346   | 0.2891 | Ratio of true positives to all predicted positives |
+| **Recall**             |   0.3346   | 0.2891 | Ratio of true positives to all ground truths       |
+| **F1-Score**           |   0.3346   | 0.2891 | Harmonic mean of precision and recall              |
+| **Loss (Final Epoch)** | **1.0562** |    —   | Aggregate total loss (obj + cls + box)             |
+
 ---
+
+## Loss Breakdown (Final Epoch)
+| Component               | Symbol      | Value  | Description                          |
+| :---------------------- | :---------- | :----- | :----------------------------------- |
+| **Objectness Loss**     | (L_{obj})   | 0.0253 | Penalizes missed or false detections |
+| **Classification Loss** | (L_{cls})   | 0.0004 | Misclassification of object category |
+| **Bounding Box Loss**   | (L_{box})   | 0.5009 | Inaccurate bounding box coordinates  |
+| **Total Loss**          | (L_{total}) | 1.0562 | Weighted combination of all losses   |
+
+---
+
 ## Model Details
 | Property          | Description |
 | ----------------- | ----------- |
@@ -234,8 +262,6 @@ Detection Visualizations
 | Model Size (INT8) | 1.2 MB      |
 | FLOPs             | ~0.5 GFLOPs |
 | Inference (GPU)   | 15–20 ms    |
-
----
 
 ---
 ## Deoplyment
@@ -247,8 +273,6 @@ Detection Visualizations
 | iPhone 13 Pro  | CoreML    | 65ms      | Mobile-ready   |
 
 ---
-
----
 ## Troubleshooting
 | Issue         | Fix                                     |
 | ------------- | --------------------------------------- |
@@ -256,8 +280,15 @@ Detection Visualizations
 | NaN Loss      | Auto-handled; reduce LR                 |
 | Low mAP       | Extend training / augment data          |
 | Slow training | Enable `--amp` / adjust workers         |
-
 ---
+## Observations
+Tomato detections are stable with moderate confidence levels (~0.4–0.5), while stem detections are weaker due to their small area and low contrast.\
+
+Class imbalance and high occlusion lead to reduced recall and mAP@75.\
+
+The objectness loss is minimal (0.0253) — indicating the network is confident about presence but less precise in bounding box localization.\
+
+Future work includes improved anchor clustering, adaptive IoU thresholding, and weighted focal modulation to boost mAP performance.\
 
 ---
 ## Contributing
@@ -271,15 +302,14 @@ Detection Visualizations
 ---
 ## License
 Licensed under the MIT License.
----
 
 ---
+
 ## Acknowldgement
 PyTorch — deep learning backbone\
 Albumentations — augmentation engine\
 COCO — dataset standard\
 Agricultural AI community — research support\
----
 
 ---
 ## Contact
@@ -287,7 +317,6 @@ Agricultural AI community — research support\
 **Email: smhamzamehdi97@gmail.com**\
 **Institution: Ritsumeikan University Japan**\
 **Project Link: https://github.com/HamzaMehdi12/Phytonet_Model/blob/main/README.md**
----
 
 ---
 ## Roadmap
@@ -295,4 +324,5 @@ Multi-crop support (peppers, cucumbers)\
 Disease detection & ripeness classification\
 3D bounding boxes & temporal tracking\
 ROS + cloud-edge hybrid deployment\
+
 ---
