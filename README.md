@@ -72,7 +72,7 @@ Traditional object detection models struggle in agricultural contexts due to:
 ## 🏛️ Architecture
 
 <p align="center">
-  <img width="4504" height="2179" alt="Phytonet Model" src="https://github.com/user-attachments/assets/cb4183b3-58f2-41ef-8e2f-0e4ec7c59392", alt="Model Architecture" width="80%">
+  <img width="4504" height="2179" alt="Phytonet Model" src="https://github.com/user-attachments/assets/cb4183b3-58f2-41ef-8e2f-0e4ec7c59392" />
 </p>
 
 Input (224×224×3)
@@ -125,7 +125,19 @@ L_{total} = λ_{cls}·L_{cls} + λ_{obj}·L_{obj} + λ_{box}·L_{box}
 ## 📈 Results
 
 <p align="center">
-  <img src="assets/results_metrics.png" alt="Training Results" width="80%">
+    <img width="1000" height="600" alt="training_loss" src="https://github.com/user-attachments/assets/01accc1b-e705-4c30-8483-83602ddfe5c6" />
+</p>
+
+<p align="center">
+    <img width="1000" height="600" alt="validation_prf_metrics" src="https://github.com/user-attachments/assets/5aeaeed5-abef-424d-bf9a-859c414d3e65" />
+</p>
+
+<p align="center">
+    <img width="1000" height="600" alt="validation_metrics" src="https://github.com/user-attachments/assets/0f6d4276-97af-46c5-bbd1-ce4ef0b1ca8c" />
+</p>
+
+<p align="center">
+    <img width="1000" height="600" alt="test_metrics" src="https://github.com/user-attachments/assets/5e7fc78c-8f74-4b83-ab77-2d0eb7789ed6" />
 </p>
 
 | Metric | Score |
@@ -139,7 +151,7 @@ From ~2.85 → ~1.05 (stable, smooth convergence)
 **F1-Score:** 0.3–0.4 (balanced precision–recall)
 
 <p align="center">
-  <img src="assets/confusion_matrix.png" alt="Confusion Matrix" width="65%">
+   <img width="1000" height="800" alt="confusion_matrix_test" src="https://github.com/user-attachments/assets/1d4518c9-8243-4e0c-89e5-c79c67841ec5" alt="Training Results" width="80%"/>
 </p>
 
 ---
