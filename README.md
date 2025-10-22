@@ -86,24 +86,14 @@ Traditional object detection models struggle in agricultural contexts due to:
   <img width="4504" height="2179" alt="Phytonet Model" src="https://github.com/user-attachments/assets/cb4183b3-58f2-41ef-8e2f-0e4ec7c59392" />
 </p>
 
-Input (224×224×3)
-↓
-┌─────────────────┐
-│ Backbone │ 5 ConvBlocks (32→256 ch)
-│ 224→112→56→28→14→7 │
-└─────────────────┘
-↓
-┌─────────────────┐
-│ Neck │ 2 ConvBlocks (256 ch)
-│ Feature refinement │
-└─────────────────┘
-↓
-┌─────────────────┐
-│ Detection Head │ 3 layers + Dropout (0.3, 0.2)
-│ (9 anchors) │ Output: [B, 63, 7, 7]
-└─────────────────┘
-Output: [B, A×(5+C), H, W]
-A=9, C=2 (stem/tomato)
+
+| Stage            | Details                              | Output Shape        |
+|-----------------|--------------------------------------|-------------------|
+| **Input**       | RGB Image                            | 224 × 224 × 3      |
+| **Backbone**    | 5 ConvBlocks (32 → 256 channels)     | 224 → 112 → 56 → 28 → 14 → 7 |
+| **Neck**        | 2 ConvBlocks (256 channels), Feature refinement | — |
+| **Detection Head** | 3 layers + Dropout (0.3, 0.2), 9 anchors | [B, 63, 7, 7]     |
+| **Output**      | Final prediction                     | [B, A × (5 + C), H, W], A=9, C=2 (stem/tomato) |
 
 ---
 
