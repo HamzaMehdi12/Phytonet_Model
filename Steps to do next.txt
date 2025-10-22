@@ -1,0 +1,15 @@
+- Make Yolo Detector.--DONE
+- Use OD bounding Box. --DONE
+- No use for loss. --DONE
+- Add F1, Accuracy, TP, FP, FN, Recall, Precision, Size, Params and FLOPs. --Done
+- What is the use of functions and how they help? Do they improve or destroy the progress --Done
+- Train/test/validate, show how the model performs in all sections. What is the classification of datasets. --Done
+- Make tables of results comparing other models. --Done
+- Metrics for evaluation, add these as well. --Done
+- Functions if any. -Done
+- Compare results with others --Done
+- Multi Object Detection and classification with bounding boxes and name of object showing over the box. --Done
+- mAP, Speed, Size, Flops, Params. AP11, AP50, AP75, APs, APm, APl, ARs, ARm, ARl (table to compare others) --Done
+- Image comparisons --Done
+- On different Datasets --
+- Lets start with the next presentation in 2 weeks

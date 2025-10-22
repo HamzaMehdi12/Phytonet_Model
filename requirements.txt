@@ -1,0 +1,14 @@
+torch
+torchvision
+opencv-python
+numpy
+pillow
+albumentations
+torchmetrics
+tqdm
+efficientnet-pytorch
+matplotlib
+scikit-learn
+seaborn
+pycocotools
+faster-coco-eval
