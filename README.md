@@ -252,6 +252,7 @@ COCO — dataset standard
 Agricultural AI community — research support
 
 ## Contact
-**Author: Muhammad Hamza Mehdi**
-**Albumenations: augemntation engine**
-**COCO: dataset standard**
+**Author: Muhammad Hamza Mehdi**\
+**Email: smhamzamehdi97@gmail.com**\
+**Institution: Ritsumeikan University Japan**\
+**Project Link: **
