@@ -1,0 +1,8 @@
+{
+  "model_size_mb": 12.818546295166016,
+  "flops": 332804864.0,
+  "total_params": 3356767,
+  "trainable_params": 3356767,
+  "input_size": 224,
+  "device": "cuda"
+}
