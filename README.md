@@ -20,8 +20,8 @@
 - [Contributing](#-contributing)
 - [License](#-license)
 - [Acknowledgments](#-acknowledgments)
-- [Contact](#-contact)
-- [Roadmap](#-roadmap)
+- [Contact](#-Contact)
+- [Roadmap](#-Roadmap)
 - [Performance Benchmarks](#-performance-benchmarks)
 
 ---
