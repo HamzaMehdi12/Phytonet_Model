@@ -100,9 +100,9 @@ Traditional object detection models struggle in agricultural contexts due to:
 ## 🧮 Loss Function
 
 **Total Loss**  
-$$
+```
 L_{total} = λ_{cls}·L_{cls} + λ_{obj}·L_{obj} + λ_{box}·L_{box}
-$$
+```
 
 | Component | Description | Formula |
 |------------|--------------|----------|
