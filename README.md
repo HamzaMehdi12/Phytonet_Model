@@ -83,17 +83,18 @@ Traditional object detection models struggle in agricultural contexts due to:
 ## 🏛️ Architecture
 
 <p align="center">
-  <img width="4504" height="2179" alt="Phytonet Model" src="https://github.com/user-attachments/assets/cb4183b3-58f2-41ef-8e2f-0e4ec7c59392" />
+  <img width="1536" height="1024" alt="arch" src="https://github.com/user-attachments/assets/461d9975-61cc-450a-bff3-e90f7838bdcc" />
 </p>
 
 
-| Stage            | Details                              | Output Shape        |
-|-----------------|--------------------------------------|-------------------|
-| **Input**       | RGB Image                            | 224 × 224 × 3      |
-| **Backbone**    | 5 ConvBlocks (32 → 256 channels)     | 224 → 112 → 56 → 28 → 14 → 7 |
-| **Neck**        | 2 ConvBlocks (256 channels), Feature refinement | — |
-| **Detection Head** | 3 layers + Dropout (0.3, 0.2), 9 anchors | [B, 63, 7, 7]     |
-| **Output**      | Final prediction                     | [B, A × (5 + C), H, W], A=9, C=2 (stem/tomato) |
+
+| Stage | Description | Output |
+|-------|-------------|--------|
+| **Input** | RGB | 224×224×3 |
+| **Backbone** | 5 ConvBlocks (32→256) | 224→112→56→28→14→7 |
+| **Neck** | Feature refinement | — |
+| **Head** | 3 layers, dropout (0.3/0.2), 9 anchors | [B, 63, 7, 7] |
+| **Output** | A×(5+C) with A=9, C=2 | — |
 
 ---
 
@@ -207,8 +208,8 @@ python train.py --train_dir data/train --val_dir data/val --epochs 100 --batch_s
 python train.py \
   --train_dir data_aug/train \
   --epochs 300 \
-  --batch_size 8 \
-  --lr 2e-3 \
+  --batch_size 16 \
+  --lr 5e-4 \
   --img_size 224 \
   --amp \
   --use_wandb
@@ -216,7 +217,7 @@ python train.py \
 ### Training Summary
 | Stage   | Epochs  | λ_cls | γ   | Learning Rate | Notes                        |
 | :------ | :------ | :---- | :-- | :------------ | :--------------------------- |
-| Phase 1 | 1–29    | 4.0   | 2.0 | 1e-3 → 5e-4   | Early learning stabilization |
+| Phase 1 | 1–29    | 4.0   | 2.0 | 5e-4 → 5e-4   | Early learning stabilization |
 | Phase 2 | 30–89   | 5.5   | 3.0 | 5e-4 → 1e-4   | Improved class balance       |
 | Phase 3 | 90–149  | 6.5   | 3.5 | 1e-4 → 5e-5   | Precision enhancement        |
 | Phase 4 | 150–199 | 8.0   | 4.0 | 5e-5          | Final tuning and convergence |
@@ -257,10 +258,10 @@ Detection Visualizations
 ## Model Details
 | Property          | Description |
 | ----------------- | ----------- |
-| Parameters        | ~1.2M       |
-| Model Size (FP32) | 4.8 MB      |
+| Parameters        | ~36M       |
+| Model Size (FP32) | 138.01 MB      |
 | Model Size (INT8) | 1.2 MB      |
-| FLOPs             | ~0.5 GFLOPs |
+| FLOPs             | ~5.6 GFLOPs |
 | Inference (GPU)   | 15–20 ms    |
 
 ---
@@ -290,7 +291,7 @@ Detection Visualizations
 | **YOLOv8n**                           |        3.2 |       8.7 |   640×640   |    0.094   |    0.247   |    0.013   |    0.402   |    0.336   |    0.366   |      18 ms      | Improved baseline                 |
 | **SSD-MobileNetV2**                   |        2.1 |       2.9 |   300×300   |    0.061   |    0.189   |    0.004   |    0.285   |    0.267   |    0.276   |      12 ms      | Low compute cost                  |
 | **EfficientDet-D0**                   |        3.9 |       2.5 |   512×512   |    0.089   |    0.232   |    0.009   |    0.372   |    0.310   |    0.339   |      27 ms      | Balanced tradeoff                 |
-| **HighAccuracyPhytoSparseNet (Ours)** |    **1.2** |   **0.5** | **224×224** | **0.0261** | **0.1273** | **0.0000** | **0.2891** | **0.2891** | **0.2891** |   **15–20 ms**  | Edge-optimized, ultra-lightweight |
+| **HighAccuracyPhytoSparseNet (Ours)** |    **36** |   **5.6** | **224×224** | **0.0261** | **0.1273** | **0.0000** | **0.5985** | **0.5985** | **0.5985** |   **15–20 ms**  | Edge-optimized, ultra-lightweight |
 
 ### Key Observations
 | Aspect                      | Insight                                                                                                                                 |
