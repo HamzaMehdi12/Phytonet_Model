@@ -1,0 +1,201 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class DetectionLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, lambda_box=2.0, lambda_cls=4.0, 
+                 lambda_obj=2.0, class_weights=None, num_classes=2):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.lambda_box = lambda_box
+        self.lambda_cls = lambda_cls
+        self.lambda_obj = lambda_obj
+        self.num_classes = num_classes
+        
+        # Normalize class weights if provided
+        if class_weights is not None:
+            class_weights = class_weights / class_weights.sum() * len(class_weights)
+        self.class_weights = class_weights
+        
+    def focal_loss(self, pred_logits, targets, reduction='mean'):
+        """Standard focal loss without weird weight multiplication"""
+        # Ensure shapes match
+        assert pred_logits.shape == targets.shape, f"Shape mismatch: {pred_logits.shape} vs {targets.shape}"
+        
+        # Calculate BCE loss
+        bce_loss = F.binary_cross_entropy_with_logits(pred_logits, targets, reduction='none')
+        
+        # Calculate pt for focal weight
+        pred_prob = torch.sigmoid(pred_logits)
+        targets = targets.float()
+        pt = targets * pred_prob + (1 - targets) * (1 - pred_prob)
+        
+        # Focal weight
+        focal_weight = (1 - pt).pow(self.gamma)
+        
+        # Alpha weighting
+        alpha_weight = targets * self.alpha + (1 - targets) * (1 - self.alpha)
+        
+        # Combine
+        loss = alpha_weight * focal_weight * bce_loss
+        
+        if reduction == 'mean':
+            return loss.mean()
+        elif reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+    
+    def weighted_focal_loss(self, pred_logits, targets):
+        """Focal loss with class weights applied correctly"""
+        # Get per-sample focal loss
+        focal_losses = self.focal_loss(pred_logits, targets, reduction='none')  # [N, C]
+        
+        # Apply class weights if provided
+        if self.class_weights is not None:
+            # Create weight tensor matching shape
+            weights = self.class_weights.to(pred_logits.device)
+            # Apply weights only to positive samples
+            weight_mask = targets * weights.view(1, -1)  # Broadcast weights
+            # Ensure we don't reduce importance of negative samples
+            weight_mask = weight_mask + (1 - targets)  # Keep negatives at weight 1.0
+            focal_losses = focal_losses * weight_mask
+        
+        return focal_losses.mean()
+    
+    def giou_loss(self, pred_boxes, target_boxes, eps=1e-7):
+        """Generalized IoU loss for bounding boxes"""
+        if pred_boxes.numel() == 0 or target_boxes.numel() == 0:
+            return torch.tensor(0.0, device=pred_boxes.device)
+        
+        # Ensure valid boxes
+        pred_boxes = pred_boxes.clamp(0, 1)
+        target_boxes = target_boxes.clamp(0, 1)
+        
+        # Get coordinates
+        b1_x1, b1_y1, b1_x2, b1_y2 = pred_boxes[:, 0], pred_boxes[:, 1], pred_boxes[:, 2], pred_boxes[:, 3]
+        b2_x1, b2_y1, b2_x2, b2_y2 = target_boxes[:, 0], target_boxes[:, 1], target_boxes[:, 2], target_boxes[:, 3]
+        
+        # Ensure x2 > x1 and y2 > y1
+        b1_x2 = torch.max(b1_x1 + eps, b1_x2)
+        b1_y2 = torch.max(b1_y1 + eps, b1_y2)
+        b2_x2 = torch.max(b2_x1 + eps, b2_x2)
+        b2_y2 = torch.max(b2_y1 + eps, b2_y2)
+        
+        # Intersection area
+        inter_x1 = torch.max(b1_x1, b2_x1)
+        inter_y1 = torch.max(b1_y1, b2_y1)
+        inter_x2 = torch.min(b1_x2, b2_x2)
+        inter_y2 = torch.min(b1_y2, b2_y2)
+        
+        inter_area = (inter_x2 - inter_x1).clamp(0) * (inter_y2 - inter_y1).clamp(0)
+        
+        # Union area
+        b1_area = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
+        b2_area = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
+        union_area = b1_area + b2_area - inter_area + eps
+        
+        # IoU
+        iou = inter_area / union_area
+        
+        # Smallest enclosing box
+        c_x1 = torch.min(b1_x1, b2_x1)
+        c_y1 = torch.min(b1_y1, b2_y1)
+        c_x2 = torch.max(b1_x2, b2_x2)
+        c_y2 = torch.max(b1_y2, b2_y2)
+        
+        c_area = (c_x2 - c_x1) * (c_y2 - c_y1) + eps
+        
+        # GIoU
+        giou = iou - (c_area - union_area) / c_area
+        
+        # Return loss
+        return (1 - giou).mean()
+    
+    def forward(self, predictions, targets):
+        """
+        Forward pass of detection loss
+        
+        Args:
+            predictions: dict with 'pred_boxes', 'pred_cls', 'pred_obj'
+            targets: dict with 'boxes', 'cls', 'obj'
+        """
+        pred_boxes = predictions["pred_boxes"]  # [B, N, 4]
+        pred_cls = predictions["pred_cls"]      # [B, N, C]
+        pred_obj = predictions["pred_obj"]      # [B, N]
+        
+        target_boxes = targets["boxes"]         # [B, N, 4]
+        target_cls = targets["cls"]             # [B, N, C]
+        target_obj = targets["obj"]             # [B, N]
+        
+        device = pred_boxes.device
+        
+        # Create masks for positive samples
+        pos_mask = target_obj > 0.5  # [B, N]
+        num_pos = pos_mask.sum().clamp(min=1)
+        
+        # ==========================================
+        # 1. OBJECTNESS LOSS
+        # ==========================================
+        obj_loss = F.binary_cross_entropy_with_logits(
+            pred_obj, 
+            target_obj, 
+            reduction='mean'
+        )
+        
+        # ==========================================
+        # 2. CLASSIFICATION LOSS (positive samples only)
+        # ==========================================
+        if num_pos > 0:
+            pos_pred_cls = pred_cls[pos_mask]      # [num_pos, C]
+            pos_target_cls = target_cls[pos_mask]  # [num_pos, C]
+            
+            # Use weighted focal loss
+            cls_loss = self.weighted_focal_loss(pos_pred_cls, pos_target_cls)
+        else:
+            cls_loss = torch.tensor(0.0, device=device)
+        
+        # ==========================================
+        # 3. BOX LOSS (positive samples only)
+        # ==========================================
+        if num_pos > 0:
+            pos_pred_boxes = pred_boxes[pos_mask]      # [num_pos, 4]
+            pos_target_boxes = target_boxes[pos_mask]  # [num_pos, 4]
+            
+            # GIoU loss
+            giou_loss = self.giou_loss(pos_pred_boxes, pos_target_boxes)
+            
+            # L1 loss for stability
+            l1_loss = F.l1_loss(pos_pred_boxes, pos_target_boxes)
+            
+            # Combine
+            box_loss = 0.5 * giou_loss + 0.5 * l1_loss
+        else:
+            box_loss = torch.tensor(0.0, device=device)
+        
+        # ==========================================
+        # COMBINE ALL LOSSES
+        # ==========================================
+        total_loss = (
+            self.lambda_obj * obj_loss +
+            self.lambda_cls * cls_loss +
+            self.lambda_box * box_loss
+        )
+        
+        # Sanity check
+        if torch.isnan(total_loss) or torch.isinf(total_loss) or total_loss < 0:
+            print("WARNING: Invalid loss detected!")
+            print(f"  total_loss: {total_loss.item()}")
+            print(f"  obj_loss: {obj_loss.item()}")
+            print(f"  cls_loss: {cls_loss.item()}")
+            print(f"  box_loss: {box_loss.item()}")
+            print(f"  num_pos: {num_pos.item()}")
+            
+            # Emergency: return small positive loss
+            return (torch.tensor(0.1, device=device, requires_grad=True),
+                    torch.tensor(0.0, device=device),
+                    torch.tensor(0.0, device=device),
+                    torch.tensor(0.0, device=device))
+        
+        return total_loss, cls_loss, obj_loss, box_loss
