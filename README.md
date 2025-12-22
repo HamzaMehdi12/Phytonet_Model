@@ -83,10 +83,8 @@ Traditional object detection models struggle in agricultural contexts due to:
 ## 🏛️ Architecture
 
 <p align="center">
-  <img width="1536" height="1024" alt="arch" src="https://github.com/user-attachments/assets/461d9975-61cc-450a-bff3-e90f7838bdcc" />
+  <img width="1536" height="710" alt="Arch" src="https://github.com/user-attachments/assets/7ad943bc-ccc1-4d7a-80f4-5d8e7acc5b6d" />
 </p>
-
-
 
 | Stage | Description | Output |
 |-------|-------------|--------|
