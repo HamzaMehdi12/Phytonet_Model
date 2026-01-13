@@ -164,6 +164,33 @@ The following visual and quantitative results illustrate the model’s detection
 
 
 ---
+
+## 📦 Dataset Preparation
+
+This project uses the **Tomato Dataset (OSS5G)** hosted on **Roboflow Universe**, designed for object detection in greenhouse and agricultural environments.
+
+- **Source:** Roboflow Universe – Tomato Dataset (OSS5G)  
+- **Dataset Link:** https://universe.roboflow.com/tomatodatasetnew/tomato-dataset-oss5g  
+- **Annotation Format:** YOLO  
+- **Classes:**  
+  - `tomato`  
+  - `stem`  
+- **Target Environment:** Greenhouse / controlled agriculture  
+
+### Dataset Challenges
+- Small and thin stem structures  
+- Heavy occlusion between tomatoes, stems, and leaves  
+- Variable illumination, shadows, and reflections  
+- Class imbalance (tomato ≫ stem)  
+
+The dataset is exported in **YOLO format** and organized into **train**, **validation**, and **test** splits.  
+To improve generalization and robustness—especially for **small-object stem detection**—additional data augmentation techniques are applied during training.
+
+> **Note:** This dataset is provided and maintained by the Roboflow community.  
+> Please refer to the original Roboflow page for licensing, usage terms, and attribution requirements.
+
+---
+
 ## 🛠️ Installation
 
 ### 🔧 Prerequisites
