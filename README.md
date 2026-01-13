@@ -272,18 +272,11 @@ wandb>=0.15.0
 
 ---
 ## Training
-### Basic
-python train.py --train_dir data/train --val_dir data/val --epochs 100 --batch_size 4
-
 ### Advanced
-python train.py \
-  --train_dir data_aug/train \
-  --epochs 300 \
-  --batch_size 16 \
-  --lr 5e-4 \
-  --img_size 224 \
-  --amp \
-  --use_wandb
+```text
+python train.py --train_dir Tomato_d/train --val_dir Tomato_d/valid --test_dir Tomato_d/test --epochs 10 
+--batch_size 4 --lr 5e-4 --img_size 224 --conf_thresh 0.2 --output_dir ghost_bifpn_weights --amp
+```
 
 ### Training Summary
 | Stage   | Epochs  | λ_cls | γ   | Learning Rate | Notes                        |
