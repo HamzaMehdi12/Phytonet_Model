@@ -383,10 +383,10 @@ Detection Visualizations
 
 ---
 ## Observations
-- Tomato detections are stable with moderate confidence levels (~0.4–0.5), while stem detections are weaker due to their small area and low contrast.\
-- Class imbalance and high occlusion lead to reduced recall and mAP@75.\
-- The objectness loss is minimal (0.0253) — indicating the network is confident about presence but less precise in bounding box localization.\
-- Future work includes improved anchor clustering, adaptive IoU thresholding, and weighted focal modulation to boost mAP performance.\
+- Tomato detections are stable with moderate confidence levels (~0.4–0.5), while stem detections are weaker due to their small area and low contrast.
+- Class imbalance and high occlusion lead to reduced recall and mAP@75.
+- The objectness loss is minimal (0.0253) — indicating the network is confident about presence but less precise in bounding box localization.
+- Future work includes improved anchor clustering, adaptive IoU thresholding, and weighted focal modulation to boost mAP performance.
 
 ---
 ## Contributing
