@@ -191,6 +191,59 @@ To improve generalization and robustness—especially for **small-object stem de
 
 ---
 
+## Dataset Preparation
+
+The dataset is sourced from **Roboflow Universe (Tomato Dataset OSS5G)** and exported in **YOLO format**.  
+All images and annotations are normalized and structured to ensure compatibility with the custom detection pipeline.
+
+### Directory Structure
+```text
+data/
+├── train/
+│   ├── images/
+│   └── labels/
+├── val/
+│   ├── images/
+│   └── labels/
+└── test/
+    ├── images/
+    └── labels/
+```
+### Class Mapping
+- 0 → tomato  
+- 1 → stem
+
+### Image Preprocessing
+- Images resized to 224×224
+- Pixel values normalized to [0, 1]
+- Aspect ratio preserved using padding where necessary
+
+### Data Augmentation
+To improve robustness under real-world greenhouse conditions and mitigate class imbalance, the following augmentations are applied during training:
+- Horizontal and vertical flips
+- Random rotations (±15°)
+- Scaling and translation
+- Brightness and contrast jitter
+- Gamma correction
+- Gaussian blur
+- CLAHE (Contrast Limited Adaptive Histogram Equalization)
+
+Augmentations are applied only to the **training set** and are disabled for **validation** and **testing**.
+
+### Annotation Format
+Each image is paired with a YOLO-format annotation file:
+```text
+<class_id> <x_center> <y_center> <width> <height>
+```
+### Dataset Integrity Checks
+- Automatic validation for missing or empty label files
+- Bounding box range checks (0 ≤ x, y, w, h ≤ 1)
+- Corrupted image detection and removal
+
+These checks ensure stable training and prevent NaN/Inf losses during optimization.
+
+---
+
 ## 🛠️ Installation
 
 ### 🔧 Prerequisites
@@ -216,13 +269,6 @@ albumentations>=1.3.0
 opencv-python>=4.7.0
 matplotlib>=3.7.0
 wandb>=0.15.0
-
----
-
-## Dataset Preparation
-Augmentations: flip, rotation, CLAHE, blur, brightness, gamma, scaling.
-### Running Augmentations:
-python data_augment.py
 
 ---
 ## Training
