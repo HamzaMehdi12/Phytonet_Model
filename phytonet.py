@@ -197,20 +197,11 @@ class HighAccuracyPhytoSparseNet(nn.Module):
         # ============= DETECTION HEADS =============
         output_channels = self.num_anchors * (5 + self.num_classes)
         
-        # Head for 14x14 feature map (medium objects)
-        self.head_medium = nn.Sequential(
-            C2f(c4, c4, n=n1, shortcut=False),
-            nn.Dropout2d(p=0.2),
-            ConvBlock(c4, c4, k=3, s=1, p=1),
-            nn.Conv2d(c4, output_channels, kernel_size=1, stride=1, padding=0)
-        )
-        
         # Head for 7x7 feature map (large objects)
         self.head_large = nn.Sequential(
             C2f(c5, c5, n=n1, shortcut=False),
-            nn.Dropout2d(p=0.3),
             ConvBlock(c5, c5, k=3, s=1, p=1),
-            nn.Dropout2d(p=0.2),
+            nn.Dropout2d(p=0.1),
             nn.Conv2d(c5, output_channels, kernel_size=1, stride=1, padding=0)
         )
 
@@ -247,10 +238,9 @@ class HighAccuracyPhytoSparseNet(nn.Module):
         p5 = self.c2f_down1(p5)                              # [B, c5, 7, 7]
         
         # Detection heads
-        # For compatibility with existing training code, return only large head
-        # Medium head can be used for multi-scale training in future
         output_large = self.head_large(p5)   # [B, 63, 7, 7]
         
+        # Return only the large head tensor (not a dict!)
         return output_large
 
 
@@ -284,14 +274,12 @@ class HighAccuracyPhytoSparseNetDict(nn.Module):
         
         self.stage1 = nn.Sequential(
             ConvBlock(c1, c2, k=3, s=2, p=1),
-            C2f(c2, c2, n=n1, shortcut=True),
-            CBAM(c2)
+            C2f(c2, c2, n=n1, shortcut=True)
         )
         
         self.stage2 = nn.Sequential(
             ConvBlock(c2, c3, k=3, s=2, p=1),
             C2f(c3, c3, n=n2, shortcut=True),
-            CBAM(c3)
         )
         
         self.stage3 = nn.Sequential(
