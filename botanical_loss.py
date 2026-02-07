@@ -49,18 +49,12 @@ class DetectionLoss(nn.Module):
     
     def weighted_focal_loss(self, pred_logits, targets):
         """Focal loss with class weights applied correctly"""
-        # Get per-sample focal loss
-        focal_losses = self.focal_loss(pred_logits, targets, reduction='none')  # [N, C]
+        focal_losses = self.focal_loss(pred_logits, targets, reduction='none')
         
-        # Apply class weights if provided
         if self.class_weights is not None:
-            # Create weight tensor matching shape
             weights = self.class_weights.to(pred_logits.device)
-            # Apply weights only to positive samples
-            weight_mask = targets * weights.view(1, -1)  # Broadcast weights
-            # Ensure we don't reduce importance of negative samples
-            weight_mask = weight_mask + (1 - targets)  # Keep negatives at weight 1.0
-            focal_losses = focal_losses * weight_mask
+
+            focal_losses = focal_losses * weights.view(1, -1)
         
         return focal_losses.mean()
     
@@ -92,8 +86,8 @@ class DetectionLoss(nn.Module):
         inter_area = (inter_x2 - inter_x1).clamp(0) * (inter_y2 - inter_y1).clamp(0)
         
         # Union area
-        b1_area = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
-        b2_area = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
+        b1_area = (b1_x2 - b1_x1).clamp(min=eps) * (b1_y2 - b1_y1).clamp(min=eps)
+        b2_area = (b2_x2 - b2_x1).clamp(min=eps) * (b2_y2 - b2_y1).clamp(min=eps)
         union_area = b1_area + b2_area - inter_area + eps
         
         # IoU
@@ -138,9 +132,15 @@ class DetectionLoss(nn.Module):
         # ==========================================
         # 1. OBJECTNESS LOSS
         # ==========================================
+        num_total = target_obj.numel()
+        num_pos_obj = target_obj.sum().clamp(min=1)
+        num_neg_obj = num_total - num_pos_obj
+        pos_weight = (num_neg_obj / num_pos_obj).clamp(max=100.0)  # Cap at 100
+
         obj_loss = F.binary_cross_entropy_with_logits(
             pred_obj, 
             target_obj, 
+            pos_weight=pos_weight,  # Up-weight positives dynamically
             reduction='mean'
         )
         
@@ -170,7 +170,7 @@ class DetectionLoss(nn.Module):
             l1_loss = F.l1_loss(pos_pred_boxes, pos_target_boxes)
             
             # Combine
-            box_loss = 0.5 * giou_loss + 0.5 * l1_loss
+            box_loss = 0.3 * giou_loss + 0.7 * l1_loss
         else:
             box_loss = torch.tensor(0.0, device=device)
         
