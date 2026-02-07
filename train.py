@@ -1,4 +1,4 @@
-﻿import os
+import os
 import time
 import argparse
 from PIL import Image
@@ -40,78 +40,111 @@ class NumpyEncoder(json.JSONEncoder):
         return super(NumpyEncoder, self).default(obj)
 
 def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224, 
-                             anchors=[[10,12], [16,18], [24,28], [32,36], [48,52],
-                                      [64,68], [80,84], [96,100], [112,116]],
-                             num_classes=2):
+                            anchors=[[10,12], [16,18], [24,28], [32,36], [48,52],
+                                     [64,68], [80,84], [96,100], [112,116]],
+                            num_classes=2):
     """
-    Convert raw targets (boxes, labels) to format expected by DetectionLoss.
-    
-    Args:
-        raw_targets: List of dicts with 'boxes' [N,4] and 'labels' [N]
-        model_output_shape: Shape of model output [B, C, H, W]
-        img_size: Image size
-        anchors: List of anchor boxes
-        num_classes: Number of classes
-    
-    Returns:
-        dict with 'boxes', 'cls', 'obj' tensors in grid format
+    Target assignment with class-aware IoU thresholds.
+    Stems are small → need lower threshold to get positive samples.
     """
     device = raw_targets[0]['boxes'].device
     batch_size = len(raw_targets)
-    _, C, H, W = model_output_shape
     
-    anchors = torch.tensor(anchors, dtype=torch.float32, device=device)
-    A = anchors.shape[0]
+    if isinstance(model_output_shape, torch.Size):
+        _, C, H, W = model_output_shape
+    else:
+        _, C, H, W = model_output_shape
     
-    # Initialize target tensors
+    anchors_t = torch.tensor(anchors, dtype=torch.float32, device=device)
+    A = anchors_t.shape[0]
+    
     target_obj = torch.zeros(batch_size, A * H * W, device=device)
     target_cls = torch.zeros(batch_size, A * H * W, num_classes, device=device)
     target_boxes = torch.zeros(batch_size, A * H * W, 4, device=device)
     
+    total_positives = 0
+    stem_positives = 0
+    tomato_positives = 0
+    
     for b in range(batch_size):
-        gt_boxes = raw_targets[b]['boxes']  # [N, 4] normalized
-        gt_labels = raw_targets[b]['labels']  # [N]
+        gt_boxes = raw_targets[b]['boxes']
+        gt_labels = raw_targets[b]['labels']
         
         if len(gt_boxes) == 0:
             continue
         
-        # Convert to center format
         gt_cx = (gt_boxes[:, 0] + gt_boxes[:, 2]) / 2.0
         gt_cy = (gt_boxes[:, 1] + gt_boxes[:, 3]) / 2.0
         gt_w = gt_boxes[:, 2] - gt_boxes[:, 0]
         gt_h = gt_boxes[:, 3] - gt_boxes[:, 1]
         
-        # Find grid cells
         grid_x = (gt_cx * W).long().clamp(0, W-1)
         grid_y = (gt_cy * H).long().clamp(0, H-1)
         
-        # Assign to anchors
+        anchors_norm = anchors_t / float(img_size)
+        
         for i, (gx, gy, gw, gh, label) in enumerate(zip(grid_x, grid_y, gt_w, gt_h, gt_labels)):
-            # Find best anchor
             anchor_ious = []
-            for anchor in anchors:
-                aw, ah = anchor[0] / img_size, anchor[1] / img_size
-                inter_w = min(gw, aw)
-                inter_h = min(gh, ah)
+            for anchor in anchors_norm:
+                aw, ah = anchor[0], anchor[1]
+                inter_w = torch.min(gw, aw)
+                inter_h = torch.min(gh, ah)
                 inter = inter_w * inter_h
                 union = gw * gh + aw * ah - inter
                 iou = inter / (union + 1e-6)
-                anchor_ious.append(iou)
+                anchor_ious.append(iou.item())
             
-            best_anchor = torch.tensor(anchor_ious).argmax().item()
+            anchor_ious = torch.tensor(anchor_ious, device=device)
             
-            # Calculate index in flattened grid
-            idx = best_anchor * H * W + gy * W + gx
-            
-            # Convert label to 0-indexed if needed
             label_idx = int(label.item())
-            # Clamp label to valid range [0, num_classes-1]
-            label_idx = max(0, min(label_idx, num_classes - 1))
             
-            # Set targets
-            target_obj[b, idx] = 1.0
-            target_cls[b, idx, label_idx] = 1.0
-            target_boxes[b, idx] = gt_boxes[i]
+            # Best anchor is ALWAYS assigned regardless of IoU
+            best_anchor = anchor_ious.argmax()
+            
+            # Class-specific threshold for additional anchors
+            # Stems are small (median 16x9) → lower threshold
+            # Tomatoes are bigger (median 24x14) → normal threshold
+            if label_idx == 0:  # stem
+                iou_thresh = 0.2   # Lower - stems are small
+                top_k = 3          # Assign top 3 anchors for stems
+            else:               # tomato
+                iou_thresh = 0.3   # Normal
+                top_k = 2          # Assign top 2 anchors for tomatoes
+            
+            # Get top-k anchors
+            _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
+            # Get anchors above threshold
+            threshold_matches = torch.where(anchor_ious > iou_thresh)[0]
+            
+            # Combine all: best + top-k + threshold
+            matching_anchors = torch.cat([
+                best_anchor.unsqueeze(0),
+                top_anchors,
+                threshold_matches
+            ]).unique()
+            
+            for anchor_idx in matching_anchors:
+                anchor_idx = int(anchor_idx.item())
+                idx = anchor_idx * H * W + int(gy) * W + int(gx)
+                
+                label_idx_clamped = max(0, min(label_idx, num_classes - 1))
+                
+                target_obj[b, idx] = 1.0
+                target_cls[b, idx, label_idx_clamped] = 1.0
+                target_boxes[b, idx] = gt_boxes[i]
+                total_positives += 1
+                
+                if label_idx == 0:
+                    stem_positives += 1
+                else:
+                    tomato_positives += 1
+    
+    # Diagnostic - show per-class positives
+    if batch_size > 0:
+        avg_pos = total_positives / batch_size
+        avg_stem = stem_positives / batch_size
+        avg_tom = tomato_positives / batch_size
+        print(f"Pos: {avg_pos:.1f}/img (stem={avg_stem:.1f} tom={avg_tom:.1f})", end=" ")
     
     return {
         'obj': target_obj,
@@ -121,30 +154,48 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
 
 def prepare_predictions_for_loss(model_output, num_classes=2):
     """
-    Convert model output tensor to format expected by DetectionLoss.
+    Convert model output to format expected by DetectionLoss.
     
-    Args:
-        model_output: Either a dict with keys or Tensor of shape [B, C, H, W] where C = A*(5+num_classes)
-        num_classes: Number of classes
-    
-    Returns:
-        dict with 'pred_boxes', 'pred_cls', 'pred_obj' tensors
+    Handles three cases:
+    1. Dict with 'pred_boxes', 'pred_cls', 'pred_obj' -> return as-is
+    2. Dict with 'large', 'medium' -> extract 'large' tensor
+    3. Tensor [B, C, H, W] -> convert to prediction dict
     """
-    # If already a dict with correct keys, return as is
+    # Case 1: Already in correct prediction format
     if isinstance(model_output, dict):
-        if 'pred_boxes' in model_output and 'pred_cls' in model_output and 'pred_obj' in model_output:
+        required_keys = {'pred_boxes', 'pred_cls', 'pred_obj'}
+        if required_keys.issubset(model_output.keys()):
             return model_output
+        
+        # Case 2: Multi-scale output dict
+        if 'large' in model_output:
+            # Use only the 'large' head output
+            model_output = model_output['large']
+            # Now it's a tensor, continue to Case 3
+        else:
+            raise TypeError(f"Dict with unexpected keys: {model_output.keys()}")
     
-    # Otherwise convert tensor to dict
+    # Case 3: Tensor format - convert to dict
+    if not isinstance(model_output, torch.Tensor):
+        raise TypeError(f"Expected Tensor or dict, got {type(model_output)}")
+    
     B, C, H, W = model_output.shape
-    A = C // (5 + num_classes)
     
-    # Reshape: [B, A, 5+num_classes, H, W] -> [B, A, H, W, 5+num_classes]
-    pred = model_output.view(B, A, 5 + num_classes, H, W)
+    # Calculate number of anchors
+    values_per_anchor = 5 + num_classes
+    A = C // values_per_anchor
+    
+    if C % values_per_anchor != 0:
+        raise ValueError(f"Channel dimension {C} is not divisible by {values_per_anchor}")
+    
+    # Reshape: [B, A*(5+C), H, W] -> [B, A, 5+C, H, W]
+    pred = model_output.view(B, A, values_per_anchor, H, W)
+    
+    # Permute to: [B, A, H, W, 5+C]
     pred = pred.permute(0, 1, 3, 4, 2).contiguous()
     
-    # Flatten spatial and anchor dimensions: [B, A*H*W, ...]
-    pred = pred.view(B, A * H * W, 5 + num_classes)
+    # Flatten spatial and anchor dimensions: [B, A*H*W, 5+C]
+    pred = pred.view(B, A * H * W, values_per_anchor)
     
     # Extract components
     pred_boxes = pred[..., :4]  # [B, A*H*W, 4]
@@ -167,7 +218,7 @@ def convert_dict_to_tensor(pred_dict, num_classes=2, H=7, W=7):
         H, W: Grid height and width
     
     Returns:
-        Tensor of shape [B, C, H, W]
+        Tensor of shape [B, C, H, W] where C = A*(5+num_classes)
     """
     pred_boxes = pred_dict['pred_boxes']  # [B, A*H*W, 4]
     pred_obj = pred_dict['pred_obj'].unsqueeze(-1)  # [B, A*H*W, 1]
@@ -183,7 +234,7 @@ def convert_dict_to_tensor(pred_dict, num_classes=2, H=7, W=7):
     pred = pred.view(B, A, H, W, 5 + num_classes)
     
     # Permute to [B, A, 5+num_classes, H, W]
-    pred = pred.permute(0, 1, 4, 2, 3)
+    pred = pred.permute(0, 1, 4, 2, 3).contiguous()
     
     # Reshape to [B, C, H, W]
     pred = pred.reshape(B, A * (5 + num_classes), H, W)
@@ -255,7 +306,7 @@ def create_final_summary(model_info, train_loss_history, val_metrics_history, te
     print(f"Training summary saved to {summary_path}")
     return summary
 
-def decode_predictions_advanced(pred, conf_thresh=0.5, iou_thresh=0.3,
+def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
                                 anchors=[[10,12], [16,18], [24,28], [32,36], [48,52],
                                          [64,68], [80,84], [96,100], [112,116]],
                                 img_size=224, max_detections=300):
@@ -271,18 +322,9 @@ def decode_predictions_advanced(pred, conf_thresh=0.5, iou_thresh=0.3,
         num_classes = (C // A) - 5
     else:
         print(f"Warning: Cannot perfectly divide channels {C} by anchors {A}")
-        print(f"C % A = {C % A}, trying to estimate num_classes")
-        # Try common values
-        for nc in [2, 3, 1]:  # Try 2, 3, or 1 class
-            if C == A * (5 + nc):
-                num_classes = nc
-                break
-        else:
-            print(f"Could not infer num_classes. C={C}, A={A}, H={H}, W={W}")
-            # Return empty predictions
-            return (torch.empty((0, 4), device=device), 
-                    torch.empty((0,), device=device), 
-                    torch.empty((0,), dtype=torch.int64, device=device))
+        return (torch.empty((0, 4), device=device), 
+                torch.empty((0,), device=device), 
+                torch.empty((0,), dtype=torch.int64, device=device))
     
     if num_classes < 1:
         print(f"Invalid num_classes={num_classes}, returning empty predictions")
@@ -325,36 +367,46 @@ def decode_predictions_advanced(pred, conf_thresh=0.5, iou_thresh=0.3,
     x2 = (cx + bw / 2.0).reshape(-1)
     y2 = (cy + bh / 2.0).reshape(-1)
 
-    boxes = torch.stack([x1, y1, x2, y2], dim=-1)
+    boxes = torch.stack([x1, y1, x2, y2], dim=-1).clamp(0, 1)
 
     obj_prob = torch.sigmoid(to).reshape(-1)
     cls_prob = torch.softmax(tcls, dim=-1).reshape(-1, num_classes)
 
     cls_scores, cls_ids = cls_prob.max(dim=-1)
 
-    eps = 1e-6
-    obj_logits = torch.log(obj_prob.clamp(min=eps) / (1 - obj_prob.clamp(min=eps) + eps))
-    cls_logits = torch.log(cls_scores.clamp(min=eps) / (1 - cls_scores.clamp(min=eps) + eps))
-    fused_logits = 0.6 * obj_logits + 0.4 * cls_logits
-    scores = torch.sigmoid(fused_logits)
-
+    scores = torch.sqrt(obj_prob * cls_scores)
+    
+    # CRITICAL: Use lower, class-specific thresholds
     class_ids = cls_ids.reshape(-1)
-    class_thresholds = torch.tensor([conf_thresh, conf_thresh]).to(device)  # [stem_thresh, tomato_thresh]
-    adjusted_thresh = class_thresholds[class_ids.long()]
+    
+    # Class-specific thresholds (lower for harder classes)
+    # Adjust these based on your validation results
+    class_thresholds = {
+        0: conf_thresh * 0.85,  # stem - use 70% of base threshold
+        1: conf_thresh * 1.0,  # tomato - use 70% of base threshold
+        }
+    
+    # Apply class-specific thresholds
+    adjusted_thresh = torch.tensor([
+        class_thresholds.get(int(cls_id.item()), conf_thresh) 
+        for cls_id in class_ids
+    ], device=device)
+    
     keep_mask = scores > adjusted_thresh
+    
     if keep_mask.sum() == 0:
-        return torch.empty((0, 4), device=device), torch.empty((0,), device=device), torch.empty((0,), dtype=torch.int64, device=device)
+        return (torch.empty((0, 4), device=device), 
+                torch.empty((0,), device=device), 
+                torch.empty((0,), dtype=torch.int64, device=device))
 
     boxes = boxes[keep_mask]
     scores = scores[keep_mask]
     class_ids = class_ids[keep_mask]
 
-    abs_boxes = boxes.clone()
-    abs_boxes[:, 0] = abs_boxes[:, 0] * img_size
-    abs_boxes[:, 1] = abs_boxes[:, 1] * img_size
-    abs_boxes[:, 2] = abs_boxes[:, 2] * img_size
-    abs_boxes[:, 3] = abs_boxes[:, 3] * img_size
+    # Convert to pixel coordinates for NMS
+    abs_boxes = boxes * img_size
 
+    # Class-specific NMS
     final_boxes = []
     final_scores = []
     final_classes = []
@@ -364,27 +416,49 @@ def decode_predictions_advanced(pred, conf_thresh=0.5, iou_thresh=0.3,
         cls_mask = (class_ids == c)
         cls_boxes = abs_boxes[cls_mask]
         cls_scores = scores[cls_mask]
+        
         if cls_boxes.numel() == 0:
             continue
-        class_nms_thresholds = {0: 0.3, 1: 0.3}  # Lower = more aggressive NMS
+        
+        # Class-specific IoU thresholds
+        # Lower = more aggressive NMS (fewer duplicate boxes)
+        # Higher = less aggressive NMS (more boxes kept)
+        class_nms_thresholds = {
+            0: iou_thresh * 1,  # stem - same as initial
+            1: iou_thresh * 1   # tomato - same as initial
+        }
+        
         class_iou_thresh = class_nms_thresholds.get(int(c.item()), iou_thresh)
+        
+        # Apply NMS
         keep = nms(cls_boxes, cls_scores, class_iou_thresh)
         keep = keep[:max_detections]
+        
         final_boxes.append(cls_boxes[keep])
         final_scores.append(cls_scores[keep])
-        final_classes.append(torch.full((len(keep),), int(c.item()), dtype=torch.int64, device=device))
+        final_classes.append(torch.full((len(keep),), int(c.item()), 
+                                       dtype=torch.int64, device=device))
 
     if len(final_boxes) == 0:
-        return torch.empty((0, 4), device=device), torch.empty((0,), device=device), torch.empty((0,), dtype=torch.int64, device=device)
+        return (torch.empty((0, 4), device=device), 
+                torch.empty((0,), device=device), 
+                torch.empty((0,), dtype=torch.int64, device=device))
 
+    # Concatenate all classes
     final_boxes = torch.cat(final_boxes, dim=0)
     final_scores = torch.cat(final_scores, dim=0)
     final_classes = torch.cat(final_classes, dim=0)
 
+    # Convert back to normalized coordinates
     final_boxes = final_boxes / float(img_size)
 
-    return final_boxes, final_scores, final_classes
+    # Final check for valid boxes
+    valid_mask = (final_boxes[:, 2] > final_boxes[:, 0]) & (final_boxes[:, 3] > final_boxes[:, 1])
+    final_boxes = final_boxes[valid_mask]
+    final_scores = final_scores[valid_mask]
+    final_classes = final_classes[valid_mask]
 
+    return final_boxes, final_scores, final_classes
 
 def draw_dashed_rectangle(img, pt1, pt2, color, thickness, dash_length=10):
     """Draw a dashed rectangle"""
@@ -409,7 +483,7 @@ def draw_dashed_rectangle(img, pt1, pt2, color, thickness, dash_length=10):
 
 
 def save_detection_image(image_tensor, target, predictions, output_path, class_names,
-                         conf_thresh=0.5, img_size=224):
+                         conf_thresh=0.35, img_size=224):
     try:
         if isinstance(image_tensor, torch.Tensor):
             mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
@@ -594,22 +668,48 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
     all_pred_labels = []
     
     try:
+        from torchmetrics.detection import MeanAveragePrecision
         map_metric = MeanAveragePrecision(class_metrics=True)
         
         with torch.no_grad():
             for idx, (imgs, targets) in enumerate(dataloader):
                 imgs = imgs.to(device)
-                outputs = model(imgs)
                 
-                # Convert dict to tensor if needed for decoding
-                if isinstance(outputs, dict):
-                    output_tensor = convert_dict_to_tensor(outputs, num_classes=2, H=7, W=7)[0]
+                # Get model output
+                model_output = model(imgs)
+                
+                # Extract tensor for decoding
+                # Handle multi-scale dict output
+                if isinstance(model_output, dict):
+                    if 'large' in model_output:
+                        # Multi-scale output - use large head
+                        output_tensor = model_output['large']
+                    elif 'pred_boxes' in model_output:
+                        # Already prediction dict - convert back to tensor
+                        output_tensor = convert_dict_to_tensor(
+                            model_output, 
+                            num_classes=2, 
+                            H=7, 
+                            W=7
+                        )
+                    else:
+                        print(f"Unexpected dict keys: {model_output.keys()}")
+                        continue
+                elif isinstance(model_output, torch.Tensor):
+                    output_tensor = model_output
                 else:
-                    output_tensor = outputs[0]
+                    print(f"Unexpected model output type: {type(model_output)}")
+                    continue
                 
+                # Extract first image from batch if needed
+                if output_tensor.dim() == 4:
+                    output_tensor = output_tensor[0]  # [B,C,H,W] -> [C,H,W]
+                
+                # Decode predictions
                 boxes, scores, class_ids = decode_predictions_advanced(
                     output_tensor, 
                     conf_thresh=args.conf_thresh,
+                    iou_thresh=args.iou_thresh,
                     anchors=args.anchors,
                     img_size=args.img_size
                 )
@@ -651,6 +751,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                     all_true_labels.extend(batch_true_labels[:min_length])
                     all_pred_labels.extend(batch_pred_labels[:min_length])
                 
+                # Save detection image for first batch
                 if idx == 0 and phase == 'val':
                     save_detection_image(
                         imgs[0].cpu(), 
@@ -678,7 +779,9 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
         except Exception as e:
             print(f"Error computing metrics: {e}")
         
+        # Confusion matrix calculation
         try:
+            from sklearn.metrics import confusion_matrix
             if len(all_true_labels) > 0 and len(all_pred_labels) > 0:
                 cm = confusion_matrix(all_true_labels, all_pred_labels, labels=list(class_names.keys()))
                 val_metrics['confusion_matrix'] = cm.tolist()
@@ -723,6 +826,8 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
         
     except Exception as e:
         print(f"Error in validation: {e}")
+        import traceback
+        traceback.print_exc()
     
     return val_metrics
 
@@ -767,7 +872,7 @@ def log_model_info(model, input_size, device, output_dir):
         print(f"Error calculating model info: {e}")
         return None
 
-def stabilize_gradients(model, max_norm=0.5, debug=False):
+def stabilize_gradients(model, max_norm=1.0, debug=False):
     """Enhanced gradient stabilization with detailed debugging"""
     total_norm = 0
     has_nan_inf = False
@@ -813,13 +918,22 @@ def stabilize_gradients(model, max_norm=0.5, debug=False):
 
 def create_optimizer_and_scheduler(model, args):
     """Create optimizer with warm-up and cosine annealing"""
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)  
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200, eta_min=1e-6)
+    effective_batch_size = args.batch_size * args.accumulate
+    base_batch_size = 16
+    lr_scale = effective_batch_size / base_batch_size
+    adjusted_lr = args.lr * lr_scale
+
+    optimizer = optim.AdamW(model.parameters(), lr=adjusted_lr, weight_decay=1e-3)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, 
+                    T_max=args.patience * 3,  # 60 epochs
+                    eta_min=1e-6
+                )
     return optimizer, scheduler
 
 def calculate_class_weights(dataset):
     """Calculate class weights with smoothing"""
-    class_counts = [1, 1, 1]
+    class_counts = [1, 1]
     
     for i in range(len(dataset)):
         _, target = dataset[i]
@@ -838,25 +952,31 @@ def calculate_class_weights(dataset):
 def adjust_weights(epoch, loss_fn, conf_thresh, device):
     """Dynamically adjust loss weights based on training progress"""
     
-    if epoch == 30:
+    if epoch == 15:
         print("\n" + "="*60)
         print(f"EPOCH {epoch}: Adjusting loss weights (Phase 2)")
         print("="*60)
-        loss_fn.lambda_cls = 4.5
-        loss_fn.gamma = 2.5
+        loss_fn.alpha= 0.3
+        loss_fn.gamma= 2.0
+        loss_fn.lambda_box= 5.0
+        loss_fn.lambda_cls = 1.5
+        loss_fn.lambda_obj= 1.0
         conf_thresh = 0.4
         print(f"  lambda_cls: {loss_fn.lambda_cls}")
         print(f"  gamma: {loss_fn.gamma}")
         print(f"  conf_thresh: {conf_thresh}")
         print("="*60 + "\n")
     
-    elif epoch == 60:
+    elif epoch == 45:
         print("\n" + "="*60)
         print(f"EPOCH {epoch}: Adjusting loss weights (Phase 3)")
         print("="*60)
-        loss_fn.lambda_cls = 5.5
-        loss_fn.gamma = 3.0
-        conf_thresh = 0.6
+        loss_fn.alpha= 0.3
+        loss_fn.gamma= 2.5
+        loss_fn.lambda_box= 5.0
+        loss_fn.lambda_cls = 2.5
+        loss_fn.lambda_obj= 2.5
+        conf_thresh = 0.5
         print(f"  lambda_cls: {loss_fn.lambda_cls}")
         print(f"  gamma: {loss_fn.gamma}")
         print(f"  conf_thresh: {conf_thresh}")
@@ -866,8 +986,26 @@ def adjust_weights(epoch, loss_fn, conf_thresh, device):
         print("\n" + "="*60)
         print(f"EPOCH {epoch}: Adjusting loss weights (Phase 4)")
         print("="*60)
-        loss_fn.lambda_cls = 6.5
-        loss_fn.gamma = 3.5
+        loss_fn.alpha= 0.35
+        loss_fn.gamma= 3.0
+        loss_fn.lambda_box= 5.0
+        loss_fn.lambda_cls = 3.0
+        loss_fn.lambda_obj= 3.0
+        conf_thresh = 0.6
+        print(f"  lambda_cls: {loss_fn.lambda_cls}")
+        print(f"  gamma: {loss_fn.gamma}")
+        print(f"  conf_thresh: {conf_thresh}")
+        print("="*60 + "\n")
+    
+    elif epoch == 120:
+        print("\n" + "="*60)
+        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 5)")
+        print("="*60)
+        loss_fn.alpha= 0.35
+        loss_fn.gamma= 3.5
+        loss_fn.lambda_box= 5.0
+        loss_fn.lambda_cls = 3.5
+        loss_fn.lambda_obj= 3.5
         conf_thresh = 0.7
         print(f"  lambda_cls: {loss_fn.lambda_cls}")
         print(f"  gamma: {loss_fn.gamma}")
@@ -876,52 +1014,73 @@ def adjust_weights(epoch, loss_fn, conf_thresh, device):
     
     elif epoch == 150:
         print("\n" + "="*60)
-        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 4)")
+        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 6)")
         print("="*60)
-        loss_fn.lambda_cls = 8.0
-        loss_fn.gamma = 4.0
+        loss_fn.alpha= 0.35
+        loss_fn.gamma= 4.0
+        loss_fn.lambda_box= 5.0
+        loss_fn.lambda_cls = 4.0
+        loss_fn.lambda_obj= 4.0
         conf_thresh = 0.8
         print(f"  lambda_cls: {loss_fn.lambda_cls}")
         print(f"  gamma: {loss_fn.gamma}")
         print(f"  conf_thresh: {conf_thresh}")
         print("="*60 + "\n")
     
-    elif epoch == 200:
+    elif epoch == 180:
         print("\n" + "="*60)
-        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 4)")
+        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 7)")
         print("="*60)
-        loss_fn.lambda_cls = 9.0
-        loss_fn.gamma = 5.0
+        loss_fn.alpha= 0.35
+        loss_fn.gamma= 4.0
+        loss_fn.lambda_box= 5.0
+        loss_fn.lambda_cls = 4.0
+        loss_fn.lambda_obj= 4.0
         conf_thresh = 0.9
         print(f"  lambda_cls: {loss_fn.lambda_cls}")
         print(f"  gamma: {loss_fn.gamma}")
         print(f"  conf_thresh: {conf_thresh}")
         print("="*60 + "\n")
-    
+
+    elif epoch == 210:
+        print("\n" + "="*60)
+        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 8)")
+        print("="*60)
+        loss_fn.alpha= 0.35
+        loss_fn.gamma= 4.0
+        loss_fn.lambda_box= 5.0
+        loss_fn.lambda_cls = 4.0
+        loss_fn.lambda_obj= 4.0
+        conf_thresh = 0.95
+        print(f"  lambda_cls: {loss_fn.lambda_cls}")
+        print(f"  gamma: {loss_fn.gamma}")
+        print(f"  conf_thresh: {conf_thresh}")
+        print("="*60 + "\n")
+
     return loss_fn
 
 def main():
     parser = argparse.ArgumentParser(description='Advanced Detection Training')
-    parser.add_argument('--train_dir', default='data/train', help='Training dataset directory')
-    parser.add_argument('--val_dir', default='data/val', help='Validation dataset directory')
-    parser.add_argument('--test_dir', default='data/test', help='Test dataset directory')
-    parser.add_argument('--epochs', type=int, default=100, help='Training epochs')
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size')
-    parser.add_argument('--lr', type=float, default=2e-3, help='Learning rate')
+    parser.add_argument('--train_dir', default='data_t/train', help='Training dataset directory')
+    parser.add_argument('--val_dir', default='data_t/valid', help='Validation dataset directory')
+    parser.add_argument('--test_dir', default='data_t/test', help='Test dataset directory')
+    parser.add_argument('--epochs', type=int, default=300, help='Training epochs')
+    parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
+    parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
-    parser.add_argument('--conf_thresh', type=float, default=0.2, help='Confidence Threshold')
-    parser.add_argument('--iou_thresh', type=float, default=0.3, help='IOU Threshold')
+    parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold')
+    parser.add_argument('--iou_thresh', type=float, default=0.45, help='IOU Threshold')
     parser.add_argument('--output_dir', default='weights', help='Output directory')
     parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
-    parser.add_argument('--accumulate', type=int, default=2, help='Gradient accumulation steps')
+    parser.add_argument('--accumulate', type=int, default=4, help='Gradient accumulation steps')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases for logging')
 
     args = parser.parse_args()
     
     # Parse anchors properly
     args.anchors = [[10,12], [16,18], [24,28], [32,36], [48,52], 
-                    [64,68], [80,84], [96,100], [112,116]]
+                [64,68], [80,84], [96,100], [112,116]]
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
@@ -944,6 +1103,19 @@ def main():
         mode='train', 
         transform=create_diverse_augmentations(args.img_size)
     )
+    print("\nChecking dataset labels...")
+    all_labels = []
+    for i in range(min(100, len(train_ds))):
+        _, target = train_ds[i]
+        all_labels.extend(target['labels'].tolist())
+
+    unique_labels = set(all_labels)
+    print(f"Unique labels: {sorted(unique_labels)}")
+
+    if unique_labels != {0, 1}:
+        print("✗ CRITICAL ERROR: Labels must be [0, 1]!")
+        print(f"Your labels are: {sorted(unique_labels)}")
+        exit()
     val_ds = BotanicalDataset(args.val_dir, img_size=args.img_size, mode='val')
     test_ds = BotanicalDataset(args.test_dir, img_size=args.img_size, mode='test')
 
@@ -978,13 +1150,14 @@ def main():
         print(f"Model output shape: {test_output.shape}")
 
     # Create loss function
-    class_weights_tensor = torch.tensor([3.0, 3.0], dtype=torch.float32).to(device)  # [stem_weight, tomato_weight]
+    class_weights_tensor = torch.tensor([12.0, 2.0], dtype=torch.float32).to(device)  # [stem_weight, tomato_weight]
     loss_fn = DetectionLoss(alpha=0.25,
                             gamma=2.0,
-                            lambda_box=2.0,
-                            lambda_cls=4.0,
-                            lambda_obj=2.0,
-                            class_weights=class_weights_tensor
+                            lambda_box=5.0,
+                            lambda_cls=1.0,
+                            lambda_obj=1.0,
+                            class_weights=class_weights_tensor,
+                            num_classes= 2
                             )
 
     optimizer, scheduler = create_optimizer_and_scheduler(model, args)
@@ -1014,7 +1187,7 @@ def main():
             
             optimizer.zero_grad()
             
-            scaler = GradScaler(enabled=amp_enabled, init_scale=2.**8)
+            scaler = GradScaler(enabled=amp_enabled, init_scale=2.**16)  # 65536
 
             for batch_idx, (imgs, targets) in enumerate(train_bar):
                 imgs = imgs.to(device, non_blocking=True)
@@ -1044,12 +1217,20 @@ def main():
                     else:
                         output_shape = outputs.shape
                     
-                    target_dict = prepare_targets_for_loss(device_targets, output_shape, 
-                                                           img_size=args.img_size, 
-                                                           anchors=args.anchors,
-                                                           num_classes=2)
+                    target_dict = prepare_targets_for_loss(
+                                    device_targets, 
+                                    output_shape, 
+                                    img_size=args.img_size, 
+                                    anchors=args.anchors,
+                                    num_classes=2
+                                )
                     
                     # Call loss function with dict inputs
+                    #target_dict_1 = prepare_targets_for_loss(...)
+                    #num_pos = (target_dict_1['obj'] > 0.5).sum().item()
+                    #num_images = len(device_targets)
+                    #print(f"Positive samples: {num_pos} ({num_pos/num_images:.1f} per image)")
+
                     loss, cls_loss, obj_loss, box_loss = loss_fn(pred_dict, target_dict)
                 
                 if torch.isnan(loss).any() or torch.isinf(loss).any():
@@ -1084,7 +1265,7 @@ def main():
                     if amp_enabled:
                         scaler.unscale_(optimizer)
                     
-                    has_bad_grads, grad_norm = stabilize_gradients(model, max_norm=0.5, debug=False)
+                    has_bad_grads, grad_norm = stabilize_gradients(model, max_norm=1.0, debug=False)
 
                     if has_bad_grads:
                         print(f"WARNING: Invalid gradients detected in batch {batch_idx}, zeroing them out")
@@ -1217,15 +1398,35 @@ def main():
         imgs, targets = next(test_iter)
         
         imgs = imgs.to(device)
+        model.eval()
         with torch.no_grad():
             outputs = model(imgs)
+
+        if isinstance(outputs, dict):
+            if 'large' in outputs:
+                # Multi-scale output - use large head
+                output_tensor = outputs['large']
+            elif 'pred_boxes' in outputs:
+                # Prediction dict - convert to tensor
+                output_tensor = convert_dict_to_tensor(outputs, num_classes=2, H=7, W=7)
+            else:
+                raise ValueError(f"Unexpected dict keys: {outputs.keys()}")
+        elif isinstance(outputs, torch.Tensor):
+            output_tensor = outputs
+        else:
+            raise TypeError(f"Unexpected model output type: {type(outputs)}")
+        
+        # Extract first image if batch
+        if output_tensor.dim() == 4:
+            output_tensor = output_tensor[0]
         
         boxes, scores, class_ids = decode_predictions_advanced(
-            outputs[0], 
-            conf_thresh=args.conf_thresh,
-            anchors=args.anchors,
-            img_size=args.img_size
-        )
+                                    output_tensor,  # Use the processed tensor, NOT outputs[0]
+                                    conf_thresh=args.conf_thresh,
+                                    iou_thresh=args.iou_thresh,
+                                    anchors=args.anchors,
+                                    img_size=args.img_size
+                                )
         
         boxes = boxes.cpu()
         scores = scores.cpu()
