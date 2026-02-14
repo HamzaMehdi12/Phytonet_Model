@@ -166,10 +166,10 @@ class DetectionLoss(nn.Module):
         tw_clamped = tw.clamp(min=-10.0, max=10.0)
         th_clamped = th.clamp(min=-10.0, max=10.0)
         
-        # CRITICAL FIX: Match the scale factor used in decode_predictions_advanced (0.5)
-        # This ensures training and inference use the same coordinate system
-        w = torch.exp(tw_clamped) * 0.15  # Increased from 0.1 to 0.15 for better box regression
-        h = torch.exp(th_clamped) * 0.15
+        # CRITICAL: Scale factor adjusted for better box regression
+        # Larger scale = larger boxes from same predictions
+        w = torch.exp(tw_clamped) * 0.25  # Increased to 0.25 for proper box sizes
+        h = torch.exp(th_clamped) * 0.25
         
         # Convert to x1, y1, x2, y2 format
         x1 = (cx - w / 2.0).clamp(0, 1)

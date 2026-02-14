@@ -369,10 +369,10 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     tw_clamped = tw.clamp(min=-10.0, max=10.0)
     th_clamped = th.clamp(min=-10.0, max=10.0)
 
-    # CRITICAL FIX: Match scale factor in loss function (0.15)
+    # CRITICAL: Match scale factor in loss function (0.25)
     # Using anchor-relative sizing with proper scale
-    bw = torch.exp(tw_clamped) * aw * 0.15  # MUST match botanical_loss.py!
-    bh = torch.exp(th_clamped) * ah * 0.15
+    bw = torch.exp(tw_clamped) * aw * 0.25  # MUST match botanical_loss.py!
+    bh = torch.exp(th_clamped) * ah * 0.25
 
     # Convert center + size to corners [x1, y1, x2, y2]
     x1 = (cx - bw / 2.0).reshape(-1)
