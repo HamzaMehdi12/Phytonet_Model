@@ -12,3 +12,4 @@ scikit-learn
 seaborn
 pycocotools
 faster-coco-eval
+wandb
