@@ -32,7 +32,10 @@ echo ""
 
 # Run training with CORRECT settings
 python train.py \
-    --epochs 200 \
+    --train_dir Tomato_d/train \ 
+    --val_dir Tomato_d/valid \
+    --test_dir Tomato_d/test \
+    --epochs 300 \
     --lr 2e-4 \
     --img_size 224 \
     --conf_thresh 0.25 \
