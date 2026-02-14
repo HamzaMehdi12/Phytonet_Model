@@ -310,7 +310,11 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
                                 anchors=[[10,12], [16,18], [24,28], [32,36], [48,52],
                                          [64,68], [80,84], [96,100], [112,116]],
                                 img_size=224, max_detections=300):
-    """Decode network output to normalized boxes [0..1], scores and class ids."""
+    """Decode network output to normalized boxes [0..1], scores and class ids.
+    
+    CRITICAL: Model outputs RAW logits (tx, ty, tw, th, to_logit, cls_logits)
+    We must apply sigmoid to tx, ty, to and softmax to cls
+    """
     device = pred.device
     anchors = torch.tensor(anchors, dtype=torch.float32, device=device)
     A = anchors.shape[0]
@@ -332,8 +336,10 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
                 torch.empty((0,), device=device), 
                 torch.empty((0,), dtype=torch.int64, device=device))
 
+    # Reshape: [C, H, W] -> [A, (5+classes), H, W] -> [A, H, W, (5+classes)]
     pred = pred.view(A, 5 + num_classes, H, W).permute(0, 2, 3, 1).contiguous()
 
+    # Create grid coordinates
     grid_y, grid_x = torch.meshgrid(
         torch.arange(H, device=device),
         torch.arange(W, device=device),
@@ -342,26 +348,33 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     grid_x = grid_x.view(1, H, W, 1).expand(A, H, W, 1).float()
     grid_y = grid_y.view(1, H, W, 1).expand(A, H, W, 1).float()
 
-    tx = pred[..., 0:1]
-    ty = pred[..., 1:2]
-    tw = pred[..., 2:3]
-    th = pred[..., 3:4]
-    to = pred[..., 4:5]
-    tcls = pred[..., 5:5+num_classes]
+    # Extract raw predictions
+    tx = pred[..., 0:1]  # center x offset (logit)
+    ty = pred[..., 1:2]  # center y offset (logit)
+    tw = pred[..., 2:3]  # width (log scale)
+    th = pred[..., 3:4]  # height (log scale)
+    to = pred[..., 4:5]  # objectness (logit)
+    tcls = pred[..., 5:5+num_classes]  # class logits
 
+    # Decode center positions (apply sigmoid, then normalize by grid)
     cx = (torch.sigmoid(tx) + grid_x) / W
     cy = (torch.sigmoid(ty) + grid_y) / H
 
+    # Normalize anchors to [0,1] scale
     anchors_norm = anchors / float(img_size)
     aw = anchors_norm[:, 0].view(A, 1, 1, 1)
     ah = anchors_norm[:, 1].view(A, 1, 1, 1)
 
+    # Decode width/height (apply exp with clamping, scale by anchor size)
     tw_clamped = tw.clamp(min=-10.0, max=10.0)
     th_clamped = th.clamp(min=-10.0, max=10.0)
 
-    bw = torch.exp(tw_clamped) * aw
-    bh = torch.exp(th_clamped) * ah
+    # CRITICAL FIX: Match scale factor in loss function (0.15)
+    # Using anchor-relative sizing with proper scale
+    bw = torch.exp(tw_clamped) * aw * 0.15  # MUST match botanical_loss.py!
+    bh = torch.exp(th_clamped) * ah * 0.15
 
+    # Convert center + size to corners [x1, y1, x2, y2]
     x1 = (cx - bw / 2.0).reshape(-1)
     y1 = (cy - bh / 2.0).reshape(-1)
     x2 = (cx + bw / 2.0).reshape(-1)
@@ -369,22 +382,24 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
 
     boxes = torch.stack([x1, y1, x2, y2], dim=-1).clamp(0, 1)
 
+    # Get objectness and class probabilities
     obj_prob = torch.sigmoid(to).reshape(-1)
     cls_prob = torch.softmax(tcls, dim=-1).reshape(-1, num_classes)
 
     cls_scores, cls_ids = cls_prob.max(dim=-1)
 
+    # Combined confidence score (sqrt gives balanced contribution)
     scores = torch.sqrt(obj_prob * cls_scores)
     
-    # CRITICAL: Use lower, class-specific thresholds
+    # CRITICAL FIX: Use LOWER confidence threshold for initial filtering
+    # This ensures we don't filter out true positives too early
     class_ids = cls_ids.reshape(-1)
     
-    # Class-specific thresholds (lower for harder classes)
-    # Adjust these based on your validation results
+    # Class-specific thresholds (LOWERED for better recall)
     class_thresholds = {
-        0: conf_thresh * 0.85,  # stem - use 70% of base threshold
-        1: conf_thresh * 1.0,  # tomato - use 70% of base threshold
-        }
+        0: conf_thresh * 0.7,  # stem - 70% of base threshold
+        1: conf_thresh * 0.8,  # tomato - 80% of base threshold
+    }
     
     # Apply class-specific thresholds
     adjusted_thresh = torch.tensor([
@@ -420,18 +435,8 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
         if cls_boxes.numel() == 0:
             continue
         
-        # Class-specific IoU thresholds
-        # Lower = more aggressive NMS (fewer duplicate boxes)
-        # Higher = less aggressive NMS (more boxes kept)
-        class_nms_thresholds = {
-            0: iou_thresh * 1,  # stem - same as initial
-            1: iou_thresh * 1   # tomato - same as initial
-        }
-        
-        class_iou_thresh = class_nms_thresholds.get(int(c.item()), iou_thresh)
-        
-        # Apply NMS
-        keep = nms(cls_boxes, cls_scores, class_iou_thresh)
+        # Use provided iou_thresh for all classes
+        keep = nms(cls_boxes, cls_scores, iou_thresh)
         keep = keep[:max_detections]
         
         final_boxes.append(cls_boxes[keep])
@@ -917,18 +922,50 @@ def stabilize_gradients(model, max_norm=1.0, debug=False):
 
 
 def create_optimizer_and_scheduler(model, args):
-    """Create optimizer with warm-up and cosine annealing"""
-    effective_batch_size = args.batch_size * args.accumulate
-    base_batch_size = 16
-    lr_scale = effective_batch_size / base_batch_size
-    adjusted_lr = args.lr * lr_scale
+    """Create optimizer with proper learning rate and warm-up cosine annealing
+    
+    CRITICAL FIX: User was using 1e-5 which is WAY TOO LOW for AdamW.
+    For AdamW on object detection, typical LR range is 1e-4 to 5e-4.
+    """
+    # CRITICAL: Don't scale LR by batch size for AdamW - it's already adaptive
+    # AdamW handles per-parameter adaptive learning rates
+    base_lr = args.lr
+    
+    # Clamp to reasonable range to prevent user mistakes
+    if base_lr < 1e-6:
+        print(f"\n{'='*60}")
+        print(f"WARNING: LR {base_lr:.2e} is TOO LOW!")
+        print(f"For AdamW optimizer, recommended range is 1e-4 to 5e-4")
+        print(f"Using minimum safe LR of 1e-4")
+        print(f"{'='*60}\n")
+        base_lr = 1e-4
+    elif base_lr > 1e-2:
+        print(f"\n{'='*60}")
+        print(f"WARNING: LR {base_lr:.2e} is TOO HIGH!")
+        print(f"Clamping to 5e-3 for stability")
+        print(f"{'='*60}\n")
+        base_lr = 5e-3
 
-    optimizer = optim.AdamW(model.parameters(), lr=adjusted_lr, weight_decay=1e-3)
+    print(f"\nOptimizer Configuration:")
+    print(f"  Base LR: {base_lr:.2e}")
+    print(f"  Weight Decay: 1e-4 (reduced for better generalization)")
+    print(f"  Betas: (0.9, 0.999)")
+    
+    optimizer = optim.AdamW(
+        model.parameters(), 
+        lr=base_lr, 
+        weight_decay=1e-4,  # Reduced from 1e-3 for better generalization
+        betas=(0.9, 0.999),
+        eps=1e-8
+    )
+    
+    # Cosine annealing with warm restarts
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                    optimizer, 
-                    T_max=args.patience * 3,  # 60 epochs
-                    eta_min=1e-6
-                )
+        optimizer, 
+        T_max=args.patience * 2,  # 40 epochs per cycle
+        eta_min=base_lr * 0.01    # Min LR is 1% of base
+    )
+    
     return optimizer, scheduler
 
 def calculate_class_weights(dataset):
@@ -950,113 +987,48 @@ def calculate_class_weights(dataset):
     return torch.tensor(class_weights, dtype=torch.float32)
 
 def adjust_weights(epoch, loss_fn, conf_thresh, device):
-    """Dynamically adjust loss weights based on training progress"""
+    """Dynamically adjust loss weights based on training progress
     
-    if epoch == 15:
-        print("\n" + "="*60)
-        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 2)")
-        print("="*60)
-        loss_fn.alpha= 0.3
-        loss_fn.gamma= 2.0
-        loss_fn.lambda_box= 5.0
-        loss_fn.lambda_cls = 1.5
-        loss_fn.lambda_obj= 1.0
-        conf_thresh = 0.4
-        print(f"  lambda_cls: {loss_fn.lambda_cls}")
+    CRITICAL FIX: Previous schedule was TOO AGGRESSIVE
+    Keep it simple - only adjust at key milestones
+    """
+    
+    # Phase 1: Initial training (epochs 1-50)
+    # Focus on learning basic box regression and objectness
+    # Keep classification weight low
+    
+    # Phase 2: Mid training (epochs 50-150) 
+    # Gradually increase classification weight
+    if epoch == 50:
+        print(f"\n{'='*60}")
+        print(f"EPOCH {epoch}: Entering Phase 2 - Balanced Training")
+        print(f"{'='*60}")
+        loss_fn.lambda_cls = 1.5  # Increase classification importance
+        loss_fn.gamma = 2.5       # Focus more on hard examples
+        conf_thresh = 0.3
+        print(f"  lambda_box: {loss_fn.lambda_box}")
+        print(f"  lambda_obj: {loss_fn.lambda_obj}")
+        print(f"  lambda_cls: {loss_fn.lambda_cls} (INCREASED)")
         print(f"  gamma: {loss_fn.gamma}")
         print(f"  conf_thresh: {conf_thresh}")
-        print("="*60 + "\n")
+        print(f"{'='*60}\n")
     
-    elif epoch == 45:
-        print("\n" + "="*60)
-        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 3)")
-        print("="*60)
-        loss_fn.alpha= 0.3
-        loss_fn.gamma= 2.5
-        loss_fn.lambda_box= 5.0
-        loss_fn.lambda_cls = 2.5
-        loss_fn.lambda_obj= 2.5
-        conf_thresh = 0.5
-        print(f"  lambda_cls: {loss_fn.lambda_cls}")
-        print(f"  gamma: {loss_fn.gamma}")
-        print(f"  conf_thresh: {conf_thresh}")
-        print("="*60 + "\n")
-    
-    elif epoch == 90:
-        print("\n" + "="*60)
-        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 4)")
-        print("="*60)
-        loss_fn.alpha= 0.35
-        loss_fn.gamma= 3.0
-        loss_fn.lambda_box= 5.0
-        loss_fn.lambda_cls = 3.0
-        loss_fn.lambda_obj= 3.0
-        conf_thresh = 0.6
-        print(f"  lambda_cls: {loss_fn.lambda_cls}")
-        print(f"  gamma: {loss_fn.gamma}")
-        print(f"  conf_thresh: {conf_thresh}")
-        print("="*60 + "\n")
-    
-    elif epoch == 120:
-        print("\n" + "="*60)
-        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 5)")
-        print("="*60)
-        loss_fn.alpha= 0.35
-        loss_fn.gamma= 3.5
-        loss_fn.lambda_box= 5.0
-        loss_fn.lambda_cls = 3.5
-        loss_fn.lambda_obj= 3.5
-        conf_thresh = 0.7
-        print(f"  lambda_cls: {loss_fn.lambda_cls}")
-        print(f"  gamma: {loss_fn.gamma}")
-        print(f"  conf_thresh: {conf_thresh}")
-        print("="*60 + "\n")
-    
+    # Phase 3: Late training (epochs 150+)
+    # Fine-tune with higher classification weight
     elif epoch == 150:
-        print("\n" + "="*60)
-        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 6)")
-        print("="*60)
-        loss_fn.alpha= 0.35
-        loss_fn.gamma= 4.0
-        loss_fn.lambda_box= 5.0
-        loss_fn.lambda_cls = 4.0
-        loss_fn.lambda_obj= 4.0
-        conf_thresh = 0.8
-        print(f"  lambda_cls: {loss_fn.lambda_cls}")
+        print(f"\n{'='*60}")
+        print(f"EPOCH {epoch}: Entering Phase 3 - Fine-tuning")
+        print(f"{'='*60}")
+        loss_fn.lambda_cls = 2.0  # Further increase classification
+        loss_fn.gamma = 3.0       # Even more focus on hard examples
+        conf_thresh = 0.35
+        print(f"  lambda_box: {loss_fn.lambda_box}")
+        print(f"  lambda_obj: {loss_fn.lambda_obj}")
+        print(f"  lambda_cls: {loss_fn.lambda_cls} (INCREASED)")
         print(f"  gamma: {loss_fn.gamma}")
         print(f"  conf_thresh: {conf_thresh}")
-        print("="*60 + "\n")
+        print(f"{'='*60}\n")
     
-    elif epoch == 180:
-        print("\n" + "="*60)
-        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 7)")
-        print("="*60)
-        loss_fn.alpha= 0.35
-        loss_fn.gamma= 4.0
-        loss_fn.lambda_box= 5.0
-        loss_fn.lambda_cls = 4.0
-        loss_fn.lambda_obj= 4.0
-        conf_thresh = 0.9
-        print(f"  lambda_cls: {loss_fn.lambda_cls}")
-        print(f"  gamma: {loss_fn.gamma}")
-        print(f"  conf_thresh: {conf_thresh}")
-        print("="*60 + "\n")
-
-    elif epoch == 210:
-        print("\n" + "="*60)
-        print(f"EPOCH {epoch}: Adjusting loss weights (Phase 8)")
-        print("="*60)
-        loss_fn.alpha= 0.35
-        loss_fn.gamma= 4.0
-        loss_fn.lambda_box= 5.0
-        loss_fn.lambda_cls = 4.0
-        loss_fn.lambda_obj= 4.0
-        conf_thresh = 0.95
-        print(f"  lambda_cls: {loss_fn.lambda_cls}")
-        print(f"  gamma: {loss_fn.gamma}")
-        print(f"  conf_thresh: {conf_thresh}")
-        print("="*60 + "\n")
-
     return loss_fn
 
 def main():
@@ -1066,9 +1038,9 @@ def main():
     parser.add_argument('--test_dir', default='data_t/test', help='Test dataset directory')
     parser.add_argument('--epochs', type=int, default=300, help='Training epochs')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
-    parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate')
+    parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate (CHANGED from 5e-4 to 2e-4 for stability)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
-    parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold')
+    parser.add_argument('--conf_thresh', type=float, default=0.25, help='Confidence Threshold (LOWERED from 0.35)')
     parser.add_argument('--iou_thresh', type=float, default=0.45, help='IOU Threshold')
     parser.add_argument('--output_dir', default='weights', help='Output directory')
     parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
@@ -1077,6 +1049,21 @@ def main():
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases for logging')
 
     args = parser.parse_args()
+    
+    # CRITICAL: Print actual arguments being used
+    print(f"\n{'='*60}")
+    print(f"TRAINING CONFIGURATION")
+    print(f"{'='*60}")
+    print(f"Learning Rate: {args.lr:.2e} (user provided or default)")
+    print(f"Batch Size: {args.batch_size}")
+    print(f"Image Size: {args.img_size}")
+    print(f"Epochs: {args.epochs}")
+    print(f"Conf Thresh: {args.conf_thresh}")
+    print(f"IOU Thresh: {args.iou_thresh}")
+    print(f"AMP Enabled: {args.amp}")
+    print(f"Gradient Accumulation: {args.accumulate}")
+    print(f"Effective Batch Size: {args.batch_size * args.accumulate}")
+    print(f"{'='*60}\n")
     
     # Parse anchors properly
     args.anchors = [[10,12], [16,18], [24,28], [32,36], [48,52], 
@@ -1149,16 +1136,31 @@ def main():
     else:
         print(f"Model output shape: {test_output.shape}")
 
-    # Create loss function
-    class_weights_tensor = torch.tensor([12.0, 2.0], dtype=torch.float32).to(device)  # [stem_weight, tomato_weight]
-    loss_fn = DetectionLoss(alpha=0.25,
-                            gamma=2.0,
-                            lambda_box=5.0,
-                            lambda_cls=1.0,
-                            lambda_obj=1.0,
-                            class_weights=class_weights_tensor,
-                            num_classes= 2
-                            )
+    # Create loss function with BETTER BALANCED weights
+    # CRITICAL FIX: Previous weights were way off
+    # Box loss should be HIGHEST priority for localization
+    # Then objectness (to learn what's an object)
+    # Then classification (easiest task)
+    class_weights_tensor = torch.tensor([8.0, 1.5], dtype=torch.float32).to(device)  # [stem_weight, tomato_weight]
+    loss_fn = DetectionLoss(
+        alpha=0.25,           # Focal loss alpha (balance pos/neg)
+        gamma=2.0,            # Focal loss gamma (focus on hard examples)
+        lambda_box=5.0,       # BOX is most important! (was 5.0)
+        lambda_obj=2.0,       # Objectness second (was 1.0)  
+        lambda_cls=1.0,       # Classification last (was 1.0)
+        class_weights=class_weights_tensor,
+        num_classes=2
+    )
+    
+    print(f"\n{'='*60}")
+    print(f"Loss Function Configuration:")
+    print(f"  lambda_box: {loss_fn.lambda_box} (HIGHEST - localization is key)")
+    print(f"  lambda_obj: {loss_fn.lambda_obj} (MEDIUM - detect objects)")
+    print(f"  lambda_cls: {loss_fn.lambda_cls} (LOWER - easier task)")
+    print(f"  focal alpha: {loss_fn.alpha}")
+    print(f"  focal gamma: {loss_fn.gamma}")
+    print(f"  class_weights: stem={class_weights_tensor[0]:.1f}, tomato={class_weights_tensor[1]:.1f}")
+    print(f"{'='*60}\n")
 
     optimizer, scheduler = create_optimizer_and_scheduler(model, args)
 

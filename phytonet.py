@@ -215,9 +215,11 @@ class HighAccuracyPhytoSparseNet(nn.Module):
             
             The output is organized as:
             [B, A*(5+C), H, W] where for each anchor:
-            - channels 0-3: bbox offsets (tx, ty, tw, th)
-            - channel 4: objectness logit
-            - channels 5-(5+C-1): class logits
+            - channels 0-3: bbox offsets (tx, ty, tw, th) - RAW LOGITS
+            - channel 4: objectness logit - RAW
+            - channels 5-(5+C-1): class logits - RAW
+            
+            Loss function will apply sigmoid/exp/softmax as needed
         """
         # Backbone
         x = self.stem(x)           # [B, c1, 112, 112]
@@ -237,7 +239,8 @@ class HighAccuracyPhytoSparseNet(nn.Module):
         p5 = torch.cat([p5, s4], dim=1)                      # [B, c4+c5, 7, 7]
         p5 = self.c2f_down1(p5)                              # [B, c5, 7, 7]
         
-        # Detection heads
+        # Detection heads - outputs RAW logits
+        # Loss function handles sigmoid/activations internally
         output_large = self.head_large(p5)   # [B, 63, 7, 7]
         
         # Return only the large head tensor (not a dict!)

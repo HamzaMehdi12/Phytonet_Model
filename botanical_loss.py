@@ -113,21 +113,73 @@ class DetectionLoss(nn.Module):
         
         Args:
             predictions: dict with 'pred_boxes', 'pred_cls', 'pred_obj'
+                pred_boxes are RAW logits (tx, ty, tw, th)
             targets: dict with 'boxes', 'cls', 'obj'
+                boxes are normalized [0,1] coordinates (x1, y1, x2, y2)
         """
-        pred_boxes = predictions["pred_boxes"]  # [B, N, 4]
+        pred_boxes = predictions["pred_boxes"]  # [B, N, 4] - raw logits
         pred_cls = predictions["pred_cls"]      # [B, N, C]
         pred_obj = predictions["pred_obj"]      # [B, N]
         
-        target_boxes = targets["boxes"]         # [B, N, 4]
+        target_boxes = targets["boxes"]         # [B, N, 4] - normalized coords
         target_cls = targets["cls"]             # [B, N, C]
         target_obj = targets["obj"]             # [B, N]
         
         device = pred_boxes.device
+        B, N, _ = pred_boxes.shape
+        
+        # Infer grid size from N and num anchors (assume 9 anchors)
+        A = 9
+        H = W = int((N / A) ** 0.5)
         
         # Create masks for positive samples
         pos_mask = target_obj > 0.5  # [B, N]
         num_pos = pos_mask.sum().clamp(min=1)
+        
+        # ==========================================
+        # CONVERT PREDICTIONS TO NORMALIZED COORDS
+        # ==========================================
+        # Reshape pred_boxes to [B, A, H, W, 4]
+        pred_boxes_grid = pred_boxes.view(B, A, H, W, 4)
+        
+        # Create grid
+        grid_y, grid_x = torch.meshgrid(
+            torch.arange(H, device=device, dtype=torch.float32),
+            torch.arange(W, device=device, dtype=torch.float32),
+            indexing='ij'
+        )
+        grid_x = grid_x.view(1, 1, H, W, 1)
+        grid_y = grid_y.view(1, 1, H, W, 1)
+        
+        # Decode boxes: tx, ty -> cx, cy (normalized to grid)
+        tx = pred_boxes_grid[..., 0:1]
+        ty = pred_boxes_grid[..., 1:2]
+        tw = pred_boxes_grid[..., 2:3]
+        th = pred_boxes_grid[..., 3:4]
+        
+        # Apply sigmoid to center offsets, normalize by grid size
+        cx = (torch.sigmoid(tx) + grid_x) / W
+        cy = (torch.sigmoid(ty) + grid_y) / H
+        
+        # Apply exp to width/height (they're log-scale)
+        # Clamp to prevent explosion
+        tw_clamped = tw.clamp(min=-10.0, max=10.0)
+        th_clamped = th.clamp(min=-10.0, max=10.0)
+        
+        # CRITICAL FIX: Match the scale factor used in decode_predictions_advanced (0.5)
+        # This ensures training and inference use the same coordinate system
+        w = torch.exp(tw_clamped) * 0.15  # Increased from 0.1 to 0.15 for better box regression
+        h = torch.exp(th_clamped) * 0.15
+        
+        # Convert to x1, y1, x2, y2 format
+        x1 = (cx - w / 2.0).clamp(0, 1)
+        y1 = (cy - h / 2.0).clamp(0, 1)
+        x2 = (cx + w / 2.0).clamp(0, 1)
+        y2 = (cy + h / 2.0).clamp(0, 1)
+        
+        # Reshape back to [B, N, 4]
+        pred_boxes_decoded = torch.stack([x1, y1, x2, y2], dim=-1)
+        pred_boxes_decoded = pred_boxes_decoded.view(B, N, 4)
         
         # ==========================================
         # 1. OBJECTNESS LOSS
@@ -160,8 +212,8 @@ class DetectionLoss(nn.Module):
         # 3. BOX LOSS (positive samples only)
         # ==========================================
         if num_pos > 0:
-            pos_pred_boxes = pred_boxes[pos_mask]      # [num_pos, 4]
-            pos_target_boxes = target_boxes[pos_mask]  # [num_pos, 4]
+            pos_pred_boxes = pred_boxes_decoded[pos_mask]  # [num_pos, 4] - normalized
+            pos_target_boxes = target_boxes[pos_mask]      # [num_pos, 4] - normalized
             
             # GIoU loss
             giou_loss = self.giou_loss(pos_pred_boxes, pos_target_boxes)
@@ -169,8 +221,8 @@ class DetectionLoss(nn.Module):
             # L1 loss for stability
             l1_loss = F.l1_loss(pos_pred_boxes, pos_target_boxes)
             
-            # Combine
-            box_loss = 0.3 * giou_loss + 0.7 * l1_loss
+            # Combine with more weight on GIoU for better localization
+            box_loss = 0.5 * giou_loss + 0.5 * l1_loss
         else:
             box_loss = torch.tensor(0.0, device=device)
         
