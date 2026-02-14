@@ -4,7 +4,8 @@ import torch.nn.functional as F
 
 class DetectionLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0, lambda_box=2.0, lambda_cls=4.0, 
-                 lambda_obj=2.0, class_weights=None, num_classes=2):
+                 lambda_obj=2.0, class_weights=None, num_classes=2,
+                 anchors=None, img_size=224, box_scale=0.25):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -12,6 +13,13 @@ class DetectionLoss(nn.Module):
         self.lambda_cls = lambda_cls
         self.lambda_obj = lambda_obj
         self.num_classes = num_classes
+        self.img_size = img_size
+        self.box_scale = box_scale
+        # Default anchors if not provided
+        if anchors is None:
+            anchors = [[10, 12], [16, 18], [24, 28], [32, 36], [48, 52],
+                       [64, 68], [80, 84], [96, 100], [112, 116]]
+        self.anchors = torch.tensor(anchors, dtype=torch.float32)
         
         # Normalize class weights if provided
         if class_weights is not None:
@@ -128,9 +136,11 @@ class DetectionLoss(nn.Module):
         device = pred_boxes.device
         B, N, _ = pred_boxes.shape
         
-        # Infer grid size from N and num anchors (assume 9 anchors)
-        A = 9
+        # Infer grid size from N and num anchors
+        A = self.anchors.shape[0]
         H = W = int((N / A) ** 0.5)
+        if A * H * W != N:
+            raise ValueError(f"Invalid shape: N={N} not divisible by anchors={A} and grid={H}x{W}")
         
         # Create masks for positive samples
         pos_mask = target_obj > 0.5  # [B, N]
@@ -166,10 +176,12 @@ class DetectionLoss(nn.Module):
         tw_clamped = tw.clamp(min=-10.0, max=10.0)
         th_clamped = th.clamp(min=-10.0, max=10.0)
         
-        # CRITICAL: Scale factor adjusted for better box regression
-        # Larger scale = larger boxes from same predictions
-        w = torch.exp(tw_clamped) * 0.25  # Increased to 0.25 for proper box sizes
-        h = torch.exp(th_clamped) * 0.25
+        # Anchor-relative sizing (MUST match decode_predictions_advanced)
+        anchors = self.anchors.to(device) / float(self.img_size)
+        aw = anchors[:, 0].view(A, 1, 1, 1)
+        ah = anchors[:, 1].view(A, 1, 1, 1)
+        w = torch.exp(tw_clamped) * aw * self.box_scale
+        h = torch.exp(th_clamped) * ah * self.box_scale
         
         # Convert to x1, y1, x2, y2 format
         x1 = (cx - w / 2.0).clamp(0, 1)

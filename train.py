@@ -1149,7 +1149,10 @@ def main():
         lambda_obj=2.0,       # Objectness second (was 1.0)  
         lambda_cls=1.0,       # Classification last (was 1.0)
         class_weights=class_weights_tensor,
-        num_classes=2
+        num_classes=2,
+        anchors=args.anchors,
+        img_size=args.img_size,
+        box_scale=0.25
     )
     
     print(f"\n{'='*60}")
