@@ -13,3 +13,4 @@ seaborn
 pycocotools
 faster-coco-eval
 wandb
+thop
