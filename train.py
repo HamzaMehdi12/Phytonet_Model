@@ -124,19 +124,18 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
                 threshold_matches
             ]).unique()
             
-            # BOOST: Also assign to spatial neighbors (3x3 grid around center)
-            # This helps model learn from nearby cells
-            neighbor_offsets = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
-            spatial_cells = [(int(gy), int(gx))]  # Center cell
-            for dy, dx in neighbor_offsets:
-                ny, nx = int(gy) + dy, int(gx) + dx
-                if 0 <= ny < H and 0 <= nx < W:
-                    spatial_cells.append((ny, nx))
+            # TEMPORARILY DISABLED: Spatial neighbors (testing if this causes issues)
+            # neighbor_offsets = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+            # spatial_cells = [(int(gy), int(gx))]  # Center cell
+            # for dy, dx in neighbor_offsets:
+            #     ny, nx = int(gy) + dy, int(gx) + dx
+            #     if 0 <= ny < H and 0 <= nx < W:
+            #         spatial_cells.append((ny, nx))
             
             for anchor_idx in matching_anchors:
                 anchor_idx = int(anchor_idx.item())
                 
-                # Assign to center cell with full confidence
+                # Assign to center cell only
                 idx_center = anchor_idx * H * W + int(gy) * W + int(gx)
                 label_idx_clamped = max(0, min(label_idx, num_classes - 1))
                 
@@ -149,16 +148,6 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
                     stem_positives += 1
                 else:
                     tomato_positives += 1
-                
-                # BOOST: Assign to spatial neighbors with reduced confidence (0.5)
-                # Only for best anchor to avoid over-assignment
-                if anchor_idx == int(best_anchor.item()):
-                    for cell_y, cell_x in spatial_cells[1:]:  # Skip center (already assigned)
-                        idx_neighbor = anchor_idx * H * W + cell_y * W + cell_x
-                        target_obj[b, idx_neighbor] = 0.5  # Soft target
-                        target_cls[b, idx_neighbor, label_idx_clamped] = 0.5
-                        target_boxes[b, idx_neighbor] = gt_boxes[i]
-                        total_positives += 0.5
     
     # Diagnostic - show per-class positives
     if batch_size > 0:
@@ -390,10 +379,10 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     tw_clamped = tw.clamp(min=-10.0, max=10.0)
     th_clamped = th.clamp(min=-10.0, max=10.0)
 
-    # CRITICAL: Match scale factor in loss function (0.5)
+    # CRITICAL: Match scale factor in loss function (0.35)
     # Using anchor-relative sizing with proper scale
-    bw = torch.exp(tw_clamped) * aw * 0.5  # MUST match botanical_loss.py!
-    bh = torch.exp(th_clamped) * ah * 0.5
+    bw = torch.exp(tw_clamped) * aw * 0.35  # MUST match botanical_loss.py!
+    bh = torch.exp(th_clamped) * ah * 0.35
 
     # Convert center + size to corners [x1, y1, x2, y2]
     x1 = (cx - bw / 2.0).reshape(-1)
@@ -1182,7 +1171,7 @@ def main():
         num_classes=2,
         anchors=args.anchors,
         img_size=args.img_size,
-        box_scale=0.5         # Optimized: 0.25 too small, 1.0 too large
+        box_scale=0.35        # Fine-tuned: 0.25 too small, 0.5 too large
     )
     
     print(f"\n{'='*60}")
