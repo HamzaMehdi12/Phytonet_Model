@@ -40,8 +40,8 @@ class NumpyEncoder(json.JSONEncoder):
         return super(NumpyEncoder, self).default(obj)
 
 def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224, 
-                            anchors=[[10,12], [16,18], [24,28], [32,36], [48,52],
-                                     [64,68], [80,84], [96,100], [112,116]],
+                            anchors=[[14,16], [13,22], [21,21], [16,30], [40,41],
+                                     [39,55], [46,64], [52,77], [65,98]],
                             num_classes=2):
     """
     Target assignment with class-aware IoU thresholds.
@@ -101,16 +101,15 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # Best anchor is ALWAYS assigned regardless of IoU
             best_anchor = anchor_ious.argmax()
             
-            # Class-specific threshold for additional anchors
-            # AGGRESSIVE: Assign more anchors per object for better learning
-            # Stems are small (median 15x21) → very low threshold + more anchors
-            # Tomatoes are bigger (median 43x61) → low threshold + more anchors
+            # SIMPLIFIED: Assign top-k anchors based on IoU
+            # Stems are small → assign top-3
+            # Tomatoes are bigger → assign top-2
             if label_idx == 0:  # stem
-                iou_thresh = 0.15  # VERY LOW - stems are tiny
-                top_k = 5          # Assign top 5 anchors for stems
+                iou_thresh = 0.3
+                top_k = 3
             else:               # tomato
-                iou_thresh = 0.2   # LOW - easier learning
-                top_k = 4          # Assign top 4 anchors for tomatoes
+                iou_thresh = 0.3
+                top_k = 2
             
             # Get top-k anchors
             _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
@@ -317,8 +316,8 @@ def create_final_summary(model_info, train_loss_history, val_metrics_history, te
     return summary
 
 def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
-                                anchors=[[10,12], [16,18], [24,28], [32,36], [48,52],
-                                         [64,68], [80,84], [96,100], [112,116]],
+                                anchors=[[14,16], [13,22], [21,21], [16,30], [40,41],
+                                         [39,55], [46,64], [52,77], [65,98]],
                                 img_size=224, max_detections=300):
     """Decode network output to normalized boxes [0..1], scores and class ids.
     
@@ -379,10 +378,10 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     tw_clamped = tw.clamp(min=-10.0, max=10.0)
     th_clamped = th.clamp(min=-10.0, max=10.0)
 
-    # CRITICAL: Match scale factor in loss function (0.35)
+    # CRITICAL: Match scale factor in loss function (1.0 with optimized anchors)
     # Using anchor-relative sizing with proper scale
-    bw = torch.exp(tw_clamped) * aw * 0.35  # MUST match botanical_loss.py!
-    bh = torch.exp(th_clamped) * ah * 0.35
+    bw = torch.exp(tw_clamped) * aw * 1.0  # MUST match botanical_loss.py!
+    bh = torch.exp(th_clamped) * ah * 1.0
 
     # Convert center + size to corners [x1, y1, x2, y2]
     x1 = (cx - bw / 2.0).reshape(-1)
@@ -997,28 +996,9 @@ def calculate_class_weights(dataset):
     return torch.tensor(class_weights, dtype=torch.float32)
 
 def adjust_weights(epoch, loss_fn, conf_thresh, device):
-    """Dynamically adjust loss weights based on training progress
-    
-    AGGRESSIVE SCHEDULE: More frequent adjustments for faster convergence
-    """
-    
-    # Phase 1: Warmup (epochs 1-20)
-    # Very low conf_thresh to allow model to make predictions
-    if epoch == 1:
-        conf_thresh = 0.15  # VERY LOW - let model learn to detect
-    
-    # Phase 2: Early training (epochs 20-50)
-    # Gradually increase standards
-    elif epoch == 20:
-        print(f"\n{'='*60}")
-        print(f"EPOCH {epoch}: Phase 2 - Increasing Standards")
-        loss_fn.lambda_cls = 1.0
-        conf_thresh = 0.25
-        print(f"  conf_thresh: {conf_thresh}")
-        print(f"{'='*60}\n")
-    
-    # Phase 3: Mid training (epochs 50-100) 
-    elif epoch == 50:
+    """Keep loss weights constant - no complex schedules"""
+    # DO NOTHING - let the model learn naturally
+    return loss_fn
         print(f"\n{'='*60}")
         print(f"EPOCH {epoch}: Entering Phase 2 - Balanced Training")
         print(f"{'='*60}")
@@ -1057,7 +1037,7 @@ def main():
     parser.add_argument('--test_dir', default='data_t/test', help='Test dataset directory')
     parser.add_argument('--epochs', type=int, default=300, help='Training epochs')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
-    parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate (CHANGED from 5e-4 to 2e-4 for stability)')
+    parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate (3e-4 optimal for AdamW)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
     parser.add_argument('--conf_thresh', type=float, default=0.25, help='Confidence Threshold (LOWERED from 0.35)')
     parser.add_argument('--iou_thresh', type=float, default=0.45, help='IOU Threshold')
@@ -1156,22 +1136,19 @@ def main():
         print(f"Model output shape: {test_output.shape}")
 
     # Create loss function with BETTER BALANCED weights
-    # CRITICAL FIX: Previous weights were way off
-    # Box loss should be HIGHEST priority for localization
-    # Then objectness (to learn what's an object)
-    # Then classification (easiest task)
-    class_weights_tensor = torch.tensor([10.0, 1.5], dtype=torch.float32).to(device)  # [stem_weight, tomato_weight] - BOOST stems!
+    # SIMPLIFIED LOSS WEIGHTS - Stop overthinking!
+    class_weights_tensor = torch.tensor([5.0, 1.0], dtype=torch.float32).to(device)  # stem=5x, tomato=1x
     loss_fn = DetectionLoss(
-        alpha=0.25,           # Focal loss alpha (balance pos/neg)
-        gamma=2.0,            # Focal loss gamma (focus on hard examples)
-        lambda_box=8.0,       # BOX is CRITICAL! (increased from 5.0)
-        lambda_obj=3.0,       # Objectness important (increased from 2.0)  
-        lambda_cls=0.5,       # Classification lower initially (reduced from 1.0)
+        alpha=0.25,
+        gamma=2.0,
+        lambda_box=5.0,       # Box localization
+        lambda_obj=1.0,       # Objectness
+        lambda_cls=1.0,       # Classification
         class_weights=class_weights_tensor,
         num_classes=2,
         anchors=args.anchors,
         img_size=args.img_size,
-        box_scale=0.35        # Fine-tuned: 0.25 too small, 0.5 too large
+        box_scale=1.0         # OPTIMIZED: K-means anchors designed for scale=1.0
     )
     
     print(f"\n{'='*60}")

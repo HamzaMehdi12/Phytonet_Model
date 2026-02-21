@@ -69,8 +69,8 @@ def decode_predictions_advanced(pred, conf_thresh=0.45, iou_thresh=0.45,
     tw_clamped = tw.clamp(min=-10.0, max=10.0)
     th_clamped = th.clamp(min=-10.0, max=10.0)
 
-    bw = torch.exp(tw_clamped) * aw * 0.35  # Fine-tuned: 0.25 too small, 0.5 too large
-    bh = torch.exp(th_clamped) * ah * 0.35
+    bw = torch.exp(tw_clamped) * aw * 1.0  # K-means optimized anchors with scale=1.0
+    bh = torch.exp(th_clamped) * ah * 1.0
 
     x1 = (cx - bw / 2.0).reshape(-1)
     y1 = (cy - bh / 2.0).reshape(-1)

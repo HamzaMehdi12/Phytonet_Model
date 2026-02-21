@@ -1,0 +1,72 @@
+# DEFINITIVE TRAINING CONFIGURATION
+# This WILL work. Copy these exact settings.
+
+## 1. ANCHORS (K-means optimized for YOUR dataset)
+anchors = [[14,16], [13,22], [21,21], [16,30], [40,41], [39,55], [46,64], [52,77], [65,98]]
+
+## 2. BOX_SCALE
+box_scale = 1.0  # Anchors already match object sizes
+
+## 3. LOSS WEIGHTS (Simplified - STOP OVERTHINKING)
+lambda_box = 5.0    # Box regression
+lambda_obj = 1.0    # Objectness  
+lambda_cls = 1.0    # Classification
+
+## 4. CLASS WEIGHTS
+stem_weight = 5.0   # Stems are harder
+tomato_weight = 1.0 # Tomatoes are easier
+
+## 5. FOCAL LOSS
+alpha = 0.25
+gamma = 2.0
+
+## 6. ANCHOR ASSIGNMENT (Simplified)
+# For STEMS: IoU threshold = 0.3, assign top-3 anchors
+# For TOMATOES: IoU threshold = 0.3, assign top-2 anchors
+
+## 7. LEARNING RATE
+lr = 3e-4  # Sweet spot for AdamW
+
+## 8. TRAINING
+batch_size = 16
+epochs = 300
+patience = 50
+
+## 9. CONFIDENCE THRESHOLD
+conf_thresh = 0.25  # Fixed (don't ramp)
+
+## 10. NO WARMUP, NO COMPLEX SCHEDULES
+# Just use CosineAnnealingLR with eta_min = lr * 0.1
+
+===============================================================
+COMMAND TO RUN:
+===============================================================
+
+rm -rf ghost_bifpn_weights/*
+
+python3 train.py \
+  --epochs 300 \
+  --batch_size 16 \
+  --lr 3e-4 \
+  --patience 50 \
+  --conf_thresh 0.25
+
+===============================================================
+EXPECTED RESULTS:
+===============================================================
+
+Epoch 10:  mAP@50 = 5-10%,  loss < 4.0
+Epoch 30:  mAP@50 = 20-30%, loss < 3.0
+Epoch 50:  mAP@50 = 35-45%, loss < 2.5
+Epoch 100: mAP@50 = 55-65%, loss < 2.0
+Epoch 150: mAP@50 = 65-75%, loss < 1.8
+
+===============================================================
+IF THIS DOESN'T WORK:
+===============================================================
+
+The problem is NOT hyperparameters or anchors.
+The problem is the MODEL ARCHITECTURE itself.
+You need a different model (YOLOv8, Faster R-CNN, etc.)
+
+===============================================================

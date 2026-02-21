@@ -5,7 +5,7 @@ import torch.nn.functional as F
 class DetectionLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0, lambda_box=2.0, lambda_cls=4.0, 
                  lambda_obj=2.0, class_weights=None, num_classes=2,
-                 anchors=None, img_size=224, box_scale=0.35):
+                 anchors=None, img_size=224, box_scale=1.0):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -15,10 +15,10 @@ class DetectionLoss(nn.Module):
         self.num_classes = num_classes
         self.img_size = img_size
         self.box_scale = box_scale
-        # Default anchors if not provided
+        # Default anchors if not provided (K-means optimized)
         if anchors is None:
-            anchors = [[10, 12], [16, 18], [24, 28], [32, 36], [48, 52],
-                       [64, 68], [80, 84], [96, 100], [112, 116]]
+            anchors = [[14, 16], [13, 22], [21, 21], [16, 30], [40, 41],
+                       [39, 55], [46, 64], [52, 77], [65, 98]]
         self.anchors = torch.tensor(anchors, dtype=torch.float32)
         
         # Normalize class weights if provided
