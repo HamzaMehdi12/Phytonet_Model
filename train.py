@@ -405,11 +405,12 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     class_ids = cls_ids.reshape(-1)
     
     # Class-specific thresholds
-        # CRITICAL FIX: Keep standard confidence for early training
-        # Once model is trained (epoch 50+), can use 1.2x for stricter stems
-        class_thresholds = {
-            0: conf_thresh * 1.0,  # stem - standard threshold
-            1: conf_thresh * 1.0,  # tomato - standard threshold
+    # CRITICAL FIX: Keep standard confidence for early training
+    # Once model is trained (epoch 50+), can use 1.2x for stricter stems
+    class_thresholds = {
+        0: conf_thresh * 1.0,  # stem - standard threshold
+        1: conf_thresh * 1.0,  # tomato - standard threshold
+    }
     
     # Apply class-specific thresholds
     adjusted_thresh = torch.tensor([
