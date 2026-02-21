@@ -405,12 +405,11 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     class_ids = cls_ids.reshape(-1)
     
     # Class-specific thresholds
-    # CRITICAL FIX: stem at 0.7x was TOO LOW, causing FP explosion (173 FP for 32 TP)
-    # Changed to 1.2x to be MORE selective about stems (fewer but better quality)
-    class_thresholds = {
-        0: conf_thresh * 1.2,  # stem - STRICTER threshold (higher to reduce FP)
-        1: conf_thresh * 0.9,  # tomato - slightly more permissive
-    }
+        # CRITICAL FIX: Keep standard confidence for early training
+        # Once model is trained (epoch 50+), can use 1.2x for stricter stems
+        class_thresholds = {
+            0: conf_thresh * 1.0,  # stem - standard threshold
+            1: conf_thresh * 1.0,  # tomato - standard threshold
     
     # Apply class-specific thresholds
     adjusted_thresh = torch.tensor([
@@ -1111,8 +1110,8 @@ def main():
 
     # Create loss function with BETTER BALANCED weights
     # SIMPLIFIED LOSS WEIGHTS - Stop overthinking!
-    # REVERTED: stem=15.0 caused FP explosion (173 FP vs 32 TP). Using 5.0 instead.
-    class_weights_tensor = torch.tensor([5.0, 1.0], dtype=torch.float32).to(device)  # stem=5x, tomato=1x
+    # Using 1.0x for both: let model learn naturally first, no class weighting bias
+    class_weights_tensor = torch.tensor([1.0, 1.0], dtype=torch.float32).to(device)  # Equal weights
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
