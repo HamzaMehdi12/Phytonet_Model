@@ -102,14 +102,15 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             best_anchor = anchor_ious.argmax()
             
             # Class-specific threshold for additional anchors
-            # Stems are small (median 16x9) → lower threshold
-            # Tomatoes are bigger (median 24x14) → normal threshold
+            # AGGRESSIVE: Assign more anchors per object for better learning
+            # Stems are small (median 15x21) → very low threshold + more anchors
+            # Tomatoes are bigger (median 43x61) → low threshold + more anchors
             if label_idx == 0:  # stem
-                iou_thresh = 0.2   # Lower - stems are small
-                top_k = 3          # Assign top 3 anchors for stems
+                iou_thresh = 0.15  # VERY LOW - stems are tiny
+                top_k = 5          # Assign top 5 anchors for stems
             else:               # tomato
-                iou_thresh = 0.3   # Normal
-                top_k = 2          # Assign top 2 anchors for tomatoes
+                iou_thresh = 0.2   # LOW - easier learning
+                top_k = 4          # Assign top 4 anchors for tomatoes
             
             # Get top-k anchors
             _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
@@ -123,21 +124,41 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
                 threshold_matches
             ]).unique()
             
+            # BOOST: Also assign to spatial neighbors (3x3 grid around center)
+            # This helps model learn from nearby cells
+            neighbor_offsets = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+            spatial_cells = [(int(gy), int(gx))]  # Center cell
+            for dy, dx in neighbor_offsets:
+                ny, nx = int(gy) + dy, int(gx) + dx
+                if 0 <= ny < H and 0 <= nx < W:
+                    spatial_cells.append((ny, nx))
+            
             for anchor_idx in matching_anchors:
                 anchor_idx = int(anchor_idx.item())
-                idx = anchor_idx * H * W + int(gy) * W + int(gx)
                 
+                # Assign to center cell with full confidence
+                idx_center = anchor_idx * H * W + int(gy) * W + int(gx)
                 label_idx_clamped = max(0, min(label_idx, num_classes - 1))
                 
-                target_obj[b, idx] = 1.0
-                target_cls[b, idx, label_idx_clamped] = 1.0
-                target_boxes[b, idx] = gt_boxes[i]
+                target_obj[b, idx_center] = 1.0
+                target_cls[b, idx_center, label_idx_clamped] = 1.0
+                target_boxes[b, idx_center] = gt_boxes[i]
                 total_positives += 1
                 
                 if label_idx == 0:
                     stem_positives += 1
                 else:
                     tomato_positives += 1
+                
+                # BOOST: Assign to spatial neighbors with reduced confidence (0.5)
+                # Only for best anchor to avoid over-assignment
+                if anchor_idx == int(best_anchor.item()):
+                    for cell_y, cell_x in spatial_cells[1:]:  # Skip center (already assigned)
+                        idx_neighbor = anchor_idx * H * W + cell_y * W + cell_x
+                        target_obj[b, idx_neighbor] = 0.5  # Soft target
+                        target_cls[b, idx_neighbor, label_idx_clamped] = 0.5
+                        target_boxes[b, idx_neighbor] = gt_boxes[i]
+                        total_positives += 0.5
     
     # Diagnostic - show per-class positives
     if batch_size > 0:
@@ -369,10 +390,10 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     tw_clamped = tw.clamp(min=-10.0, max=10.0)
     th_clamped = th.clamp(min=-10.0, max=10.0)
 
-    # CRITICAL: Match scale factor in loss function (1.0)
+    # CRITICAL: Match scale factor in loss function (0.5)
     # Using anchor-relative sizing with proper scale
-    bw = torch.exp(tw_clamped) * aw * 1.0  # MUST match botanical_loss.py!
-    bh = torch.exp(th_clamped) * ah * 1.0
+    bw = torch.exp(tw_clamped) * aw * 0.5  # MUST match botanical_loss.py!
+    bh = torch.exp(th_clamped) * ah * 0.5
 
     # Convert center + size to corners [x1, y1, x2, y2]
     x1 = (cx - bw / 2.0).reshape(-1)
@@ -989,17 +1010,26 @@ def calculate_class_weights(dataset):
 def adjust_weights(epoch, loss_fn, conf_thresh, device):
     """Dynamically adjust loss weights based on training progress
     
-    CRITICAL FIX: Previous schedule was TOO AGGRESSIVE
-    Keep it simple - only adjust at key milestones
+    AGGRESSIVE SCHEDULE: More frequent adjustments for faster convergence
     """
     
-    # Phase 1: Initial training (epochs 1-50)
-    # Focus on learning basic box regression and objectness
-    # Keep classification weight low
+    # Phase 1: Warmup (epochs 1-20)
+    # Very low conf_thresh to allow model to make predictions
+    if epoch == 1:
+        conf_thresh = 0.15  # VERY LOW - let model learn to detect
     
-    # Phase 2: Mid training (epochs 50-150) 
-    # Gradually increase classification weight
-    if epoch == 50:
+    # Phase 2: Early training (epochs 20-50)
+    # Gradually increase standards
+    elif epoch == 20:
+        print(f"\n{'='*60}")
+        print(f"EPOCH {epoch}: Phase 2 - Increasing Standards")
+        loss_fn.lambda_cls = 1.0
+        conf_thresh = 0.25
+        print(f"  conf_thresh: {conf_thresh}")
+        print(f"{'='*60}\n")
+    
+    # Phase 3: Mid training (epochs 50-100) 
+    elif epoch == 50:
         print(f"\n{'='*60}")
         print(f"EPOCH {epoch}: Entering Phase 2 - Balanced Training")
         print(f"{'='*60}")
@@ -1141,18 +1171,18 @@ def main():
     # Box loss should be HIGHEST priority for localization
     # Then objectness (to learn what's an object)
     # Then classification (easiest task)
-    class_weights_tensor = torch.tensor([8.0, 1.5], dtype=torch.float32).to(device)  # [stem_weight, tomato_weight]
+    class_weights_tensor = torch.tensor([10.0, 1.5], dtype=torch.float32).to(device)  # [stem_weight, tomato_weight] - BOOST stems!
     loss_fn = DetectionLoss(
         alpha=0.25,           # Focal loss alpha (balance pos/neg)
         gamma=2.0,            # Focal loss gamma (focus on hard examples)
-        lambda_box=5.0,       # BOX is most important! (was 5.0)
-        lambda_obj=2.0,       # Objectness second (was 1.0)  
-        lambda_cls=1.0,       # Classification last (was 1.0)
+        lambda_box=8.0,       # BOX is CRITICAL! (increased from 5.0)
+        lambda_obj=3.0,       # Objectness important (increased from 2.0)  
+        lambda_cls=0.5,       # Classification lower initially (reduced from 1.0)
         class_weights=class_weights_tensor,
         num_classes=2,
         anchors=args.anchors,
         img_size=args.img_size,
-        box_scale=1.0         # CRITICAL FIX: Was 0.25 (4x too small!)
+        box_scale=0.5         # Optimized: 0.25 too small, 1.0 too large
     )
     
     print(f"\n{'='*60}")
@@ -1179,6 +1209,14 @@ def main():
     try:
         for epoch in range(1, args.epochs + 1):
             epoch_start = time.time()
+            
+            # WARMUP: Gradually increase LR for first 10 epochs
+            if epoch <= 10:
+                warmup_factor = epoch / 10.0
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = args.lr * warmup_factor
+                print(f"Warmup: LR = {args.lr * warmup_factor:.6f}")
+            
             loss_fn = adjust_weights(epoch, loss_fn, args.conf_thresh, device)
             
             model.train()

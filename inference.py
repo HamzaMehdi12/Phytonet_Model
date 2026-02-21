@@ -69,8 +69,8 @@ def decode_predictions_advanced(pred, conf_thresh=0.45, iou_thresh=0.45,
     tw_clamped = tw.clamp(min=-10.0, max=10.0)
     th_clamped = th.clamp(min=-10.0, max=10.0)
 
-    bw = torch.exp(tw_clamped) * aw * 1.0  # CRITICAL FIX: Was 0.25 (4x too small!)
-    bh = torch.exp(th_clamped) * ah * 1.0
+    bw = torch.exp(tw_clamped) * aw * 0.5  # Optimized: 0.25 too small, 1.0 too large
+    bh = torch.exp(th_clamped) * ah * 0.5
 
     x1 = (cx - bw / 2.0).reshape(-1)
     y1 = (cy - bh / 2.0).reshape(-1)
