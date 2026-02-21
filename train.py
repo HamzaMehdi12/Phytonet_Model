@@ -1142,8 +1142,43 @@ def main():
     train_loss_history = []
     val_metrics_history = []
     
+    # RESUME FROM CHECKPOINT if it exists
+    start_epoch = 1
+    best_model_path = os.path.join(args.output_dir, 'best_model.pth')
+    latest_checkpoint_path = None
+    
+    # Find latest checkpoint
+    checkpoints_dir = os.path.join(args.output_dir, 'checkpoints')
+    if os.path.exists(checkpoints_dir):
+        checkpoints = sorted([f for f in os.listdir(checkpoints_dir) if f.startswith('epoch_') and f.endswith('.pth')])
+        if checkpoints:
+            latest_checkpoint_path = os.path.join(checkpoints_dir, checkpoints[-1])
+    
+    if latest_checkpoint_path and os.path.exists(latest_checkpoint_path):
+        try:
+            print(f"\n{'='*60}")
+            print(f"RESUMING FROM CHECKPOINT: {latest_checkpoint_path}")
+            print(f"{'='*60}\n")
+            
+            checkpoint = torch.load(latest_checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            
+            start_epoch = checkpoint['epoch'] + 1
+            best_map50 = checkpoint.get('best_map50', 0.0)
+            best_epoch = checkpoint.get('epoch', 0)
+            
+            print(f"Resuming from epoch {start_epoch}")
+            print(f"Best mAP@50 so far: {best_map50:.4f}")
+            
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            print("Starting from epoch 1")
+            start_epoch = 1
+    
     try:
-        for epoch in range(1, args.epochs + 1):
+        for epoch in range(start_epoch, args.epochs + 1):
             epoch_start = time.time()
             
             # WARMUP: Gradually increase LR for first 10 epochs
