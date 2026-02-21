@@ -1034,9 +1034,9 @@ def main():
     print(f"Effective Batch Size: {args.batch_size * args.accumulate}")
     print(f"{'='*60}\n")
     
-    # Parse anchors - K-MEANS OPTIMIZED FOR THIS DATASET
-    args.anchors = [[14,16], [13,22], [21,21], [16,30], [40,41],
-                    [39,55], [46,64], [52,77], [65,98]]
+    # Parse anchors - K-MEANS OPTIMIZED FOR TOMATO_D (24,850 boxes)
+    args.anchors = [[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
+                    [65, 24], [49, 60], [95, 50], [137, 71]]
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
