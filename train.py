@@ -999,36 +999,6 @@ def adjust_weights(epoch, loss_fn, conf_thresh, device):
     """Keep loss weights constant - no complex schedules"""
     # DO NOTHING - let the model learn naturally
     return loss_fn
-        print(f"\n{'='*60}")
-        print(f"EPOCH {epoch}: Entering Phase 2 - Balanced Training")
-        print(f"{'='*60}")
-        loss_fn.lambda_cls = 1.5  # Increase classification importance
-        loss_fn.gamma = 2.5       # Focus more on hard examples
-        conf_thresh = 0.3
-        print(f"  lambda_box: {loss_fn.lambda_box}")
-        print(f"  lambda_obj: {loss_fn.lambda_obj}")
-        print(f"  lambda_cls: {loss_fn.lambda_cls} (INCREASED)")
-        print(f"  gamma: {loss_fn.gamma}")
-        print(f"  conf_thresh: {conf_thresh}")
-        print(f"{'='*60}\n")
-    
-    # Phase 3: Late training (epochs 150+)
-    # Fine-tune with higher classification weight
-    elif epoch == 150:
-        print(f"\n{'='*60}")
-        print(f"EPOCH {epoch}: Entering Phase 3 - Fine-tuning")
-        print(f"{'='*60}")
-        loss_fn.lambda_cls = 2.0  # Further increase classification
-        loss_fn.gamma = 3.0       # Even more focus on hard examples
-        conf_thresh = 0.35
-        print(f"  lambda_box: {loss_fn.lambda_box}")
-        print(f"  lambda_obj: {loss_fn.lambda_obj}")
-        print(f"  lambda_cls: {loss_fn.lambda_cls} (INCREASED)")
-        print(f"  gamma: {loss_fn.gamma}")
-        print(f"  conf_thresh: {conf_thresh}")
-        print(f"{'='*60}\n")
-    
-    return loss_fn
 
 def main():
     parser = argparse.ArgumentParser(description='Advanced Detection Training')
