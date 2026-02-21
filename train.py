@@ -1041,7 +1041,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    shutil.rmtree(args.output_dir, ignore_errors=True)
+    # DO NOT delete output_dir - allows resuming from checkpoints!
     os.makedirs(args.output_dir, exist_ok=True)
     os.makedirs(os.path.join(args.output_dir, 'checkpoints'), exist_ok=True)
     os.makedirs(os.path.join(args.output_dir, 'detections', 'val'), exist_ok=True)
@@ -1107,7 +1107,7 @@ def main():
 
     # Create loss function with BETTER BALANCED weights
     # SIMPLIFIED LOSS WEIGHTS - Stop overthinking!
-    class_weights_tensor = torch.tensor([5.0, 1.0], dtype=torch.float32).to(device)  # stem=5x, tomato=1x
+    class_weights_tensor = torch.tensor([15.0, 1.0], dtype=torch.float32).to(device)  # stem=15x (higher to reduce FPs), tomato=1x
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
