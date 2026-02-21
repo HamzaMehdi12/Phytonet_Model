@@ -404,10 +404,12 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     # This ensures we don't filter out true positives too early
     class_ids = cls_ids.reshape(-1)
     
-    # Class-specific thresholds (LOWERED for better recall)
+    # Class-specific thresholds
+    # CRITICAL FIX: stem at 0.7x was TOO LOW, causing FP explosion (173 FP for 32 TP)
+    # Changed to 1.2x to be MORE selective about stems (fewer but better quality)
     class_thresholds = {
-        0: conf_thresh * 0.7,  # stem - 70% of base threshold
-        1: conf_thresh * 0.8,  # tomato - 80% of base threshold
+        0: conf_thresh * 1.2,  # stem - STRICTER threshold (higher to reduce FP)
+        1: conf_thresh * 0.9,  # tomato - slightly more permissive
     }
     
     # Apply class-specific thresholds
@@ -969,10 +971,12 @@ def create_optimizer_and_scheduler(model, args):
     )
     
     # Cosine annealing with warm restarts
+    # CRITICAL FIX: eta_min=0.01 dropped LR to 3e-6 by epoch 100 (FROZEN learning)
+    # Changed to 0.1 so eta_min = base_lr * 0.1 = 3e-5 (still can learn)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
         T_max=args.patience * 2,  # 40 epochs per cycle
-        eta_min=base_lr * 0.01    # Min LR is 1% of base
+        eta_min=base_lr * 0.1    # Min LR is 10% of base (was 1%, too aggressive)
     )
     
     return optimizer, scheduler
@@ -1107,7 +1111,8 @@ def main():
 
     # Create loss function with BETTER BALANCED weights
     # SIMPLIFIED LOSS WEIGHTS - Stop overthinking!
-    class_weights_tensor = torch.tensor([15.0, 1.0], dtype=torch.float32).to(device)  # stem=15x (higher to reduce FPs), tomato=1x
+    # REVERTED: stem=15.0 caused FP explosion (173 FP vs 32 TP). Using 5.0 instead.
+    class_weights_tensor = torch.tensor([5.0, 1.0], dtype=torch.float32).to(device)  # stem=5x, tomato=1x
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
