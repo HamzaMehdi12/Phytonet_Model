@@ -369,10 +369,10 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     tw_clamped = tw.clamp(min=-10.0, max=10.0)
     th_clamped = th.clamp(min=-10.0, max=10.0)
 
-    # CRITICAL: Match scale factor in loss function (0.25)
+    # CRITICAL: Match scale factor in loss function (1.0)
     # Using anchor-relative sizing with proper scale
-    bw = torch.exp(tw_clamped) * aw * 0.25  # MUST match botanical_loss.py!
-    bh = torch.exp(th_clamped) * ah * 0.25
+    bw = torch.exp(tw_clamped) * aw * 1.0  # MUST match botanical_loss.py!
+    bh = torch.exp(th_clamped) * ah * 1.0
 
     # Convert center + size to corners [x1, y1, x2, y2]
     x1 = (cx - bw / 2.0).reshape(-1)
@@ -1152,7 +1152,7 @@ def main():
         num_classes=2,
         anchors=args.anchors,
         img_size=args.img_size,
-        box_scale=0.25
+        box_scale=1.0         # CRITICAL FIX: Was 0.25 (4x too small!)
     )
     
     print(f"\n{'='*60}")

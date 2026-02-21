@@ -8,9 +8,70 @@
 ![CUDA](https://img.shields.io/badge/CUDA-11.8-orange)
 ![Dataset](https://img.shields.io/badge/Dataset-Greenhouse%20Tomatoes-lightgrey)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
-![Status](https://img.shields.io/badge/Status-Completed-success)
-![mAP@50](https://img.shields.io/badge/mAP@50-0.1273-brightgreen)
+![Status](https://img.shields.io/badge/Status-In%20Training-yellow)
+![mAP@50](https://img.shields.io/badge/mAP@50-Target%2060--75%25-blue)
 ![Inference](https://img.shields.io/badge/Inference-15--20ms-blue)
+
+---
+
+## 🚨 CRITICAL BUG FIX (February 21, 2026)
+
+### Issue: Low mAP Performance (20% vs Expected 60-75%)
+
+**Root Cause Identified:** The `box_scale` parameter was set to **0.25** — which is **4× too small** for the actual object sizes in the dataset!
+
+#### Object Size Analysis (224×224 normalized input)
+| Object Type | Annotations | Width (median) | Height (median) | Size Range |
+|------------|-------------|----------------|-----------------|------------|
+| **Stems** | 1,259 | 14.7 px | 20.5 px | 0.5×0.7 to 34.8×42.4 |
+| **Tomatoes** | 1,509 | 43.4 px | 60.7 px | 18.4×24.0 to 81.2×113.6 |
+
+#### The Problem
+With `box_scale=0.25`, effective anchor sizes were:
+```
+[2.5×3, 4×4.5, 6×7, 8×9, 12×13, 16×17, 20×21, 24×25, 28×29]
+Maximum: 28×29 pixels
+```
+
+**This meant:**
+- ❌ Median tomatoes (43×61 px) had **NO matching anchors**
+- ❌ Large tomatoes (81×114 px) were **impossible to detect**
+- ❌ Model was physically unable to predict correctly-sized boxes
+
+#### The Fix
+Changed `box_scale` from **0.25 → 1.0** in all files:
+- ✅ `train.py` (line 1155) - Loss function initialization
+- ✅ `train.py` (line 374) - Box decoding function
+- ✅ `botanical_loss.py` (line 8) - Default parameter
+- ✅ `inference.py` (line 72) - Inference decoding
+
+**New effective anchor sizes (box_scale=1.0):**
+```
+[10×12, 16×18, 24×28, 32×36, 48×52, 64×68, 80×84, 96×100, 112×116]
+```
+
+**This properly covers:**
+- ✅ Stems (15×21 px) → matched by [16×18, 24×28]
+- ✅ Tomatoes (43×61 px) → matched by [48×52, 64×68]
+- ✅ Large tomatoes (81×114 px) → matched by [80×84, 96×100, 112×116]
+
+#### Expected Results After Fix
+| Epoch Range | Previous mAP@50 | Expected mAP@50 (Fixed) |
+|-------------|-----------------|-------------------------|
+| Epoch 50 | 10% | **35-40%** |
+| Epoch 100 | 15% | **55-65%** |
+| Epoch 200-250 | 20% | **65-75%** ✅ |
+
+#### Training Restart Required
+⚠️ **IMPORTANT:** Previous model learned 4× too-small boxes. Must restart from scratch:
+
+```bash
+cd /Users/spectee/Desktop/Phytonet_Model/Phytonet_Model
+rm -rf ghost_bifpn_weights/*
+python3 train.py --epochs 300 --batch_size 16 --lr 2e-4 --patience 40
+```
+
+---
 
 ## 📋 Table of Contents
 - [Overview](#-overview)
