@@ -1,11 +1,13 @@
 import os
 import time
 import argparse
+import random
 from PIL import Image
 import matplotlib.pyplot as plt
 import json
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision
 import torch.optim as optim
 import numpy as np
@@ -1140,6 +1142,13 @@ def main():
 
     amp_enabled = args.amp and torch.cuda.is_available()
     
+    # EMA (Exponential Moving Average) for stable model weights
+    from copy import deepcopy
+    ema_model = deepcopy(model).eval()
+    ema_decay = 0.9999
+    for param in ema_model.parameters():
+        param.requires_grad = False
+    
     best_map50 = 0.0
     best_epoch = 0
     patience_counter = 0
@@ -1209,6 +1218,20 @@ def main():
             scaler = GradScaler(enabled=amp_enabled, init_scale=2.**16)  # 65536
 
             for batch_idx, (imgs, targets) in enumerate(train_bar):
+                # Multi-scale training - randomly resize images every 10 batches
+                if batch_idx % 10 == 0:
+                    # Random size between 0.8x to 1.2x of base img_size
+                    scale_factor = random.uniform(0.8, 1.2)
+                    current_size = int(args.img_size * scale_factor)
+                    # Ensure divisible by 32 for proper feature map sizes
+                    current_size = max(192, min(320, (current_size // 32) * 32))
+                else:
+                    current_size = args.img_size
+                
+                # Resize if needed
+                if current_size != imgs.shape[-1]:
+                    imgs = F.interpolate(imgs, size=current_size, mode='bilinear', align_corners=False)
+                
                 imgs = imgs.to(device, non_blocking=True)
                 
                 device_targets = []
@@ -1306,6 +1329,11 @@ def main():
                     else:
                         optimizer.step()
                     
+                    # Update EMA model
+                    with torch.no_grad():
+                        for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+                            ema_param.data.mul_(ema_decay).add_(param.data, alpha=1 - ema_decay)
+                    
                     optimizer.zero_grad()
                     
             try:
@@ -1326,7 +1354,7 @@ def main():
             print(f"Total Loss: {avg_loss:.4f} | Obj: {avg_obj:.4f} | Cls: {avg_cls:.4f} | Box: {avg_box:.4f}")
             print(f"LR: {optimizer.param_groups[0]['lr']:.7f}")
 
-            val_metrics = validate_model(model, val_loader, device, class_names, args, epoch, 'val')
+            val_metrics = validate_model(ema_model, val_loader, device, class_names, args, epoch, 'val')
             val_metrics_history.append(val_metrics)
             
             print(f"\nValidation @ Epoch {epoch}")

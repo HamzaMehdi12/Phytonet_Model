@@ -2,6 +2,7 @@ import os
 import json
 import torch
 import numpy as np
+import random
 from PIL import Image
 from torch.utils.data import Dataset
 import torchvision.transforms as T
@@ -20,11 +21,13 @@ class BotanicalDataset(Dataset):
         1 -> Tomato
     """
 
-    def __init__(self, root_dir, img_size=224, mode="train", transform=None):
+    def __init__(self, root_dir, img_size=224, mode="train", transform=None, use_mosaic=True, mosaic_prob=0.5):
         self.root_dir = root_dir
         self.img_size = img_size
         self.mode = mode
         self.transform = transform
+        self.use_mosaic = use_mosaic and (mode == "train")  # Only use mosaic in training
+        self.mosaic_prob = mosaic_prob
 
         # ---------------------------------------------------------
         # Load annotations
@@ -90,7 +93,139 @@ class BotanicalDataset(Dataset):
     def __len__(self):
         return len(self.image_ids)
 
+    def load_mosaic(self, index):
+        """
+        Mosaic augmentation - combines 4 images into one
+        YOLOv4/v5/v8 technique for better small object detection
+        Returns mosaic image and combined targets
+        """
+        # Select 3 additional random images
+        indices = [index] + random.choices(range(len(self)), k=3)
+        
+        # Create mosaic canvas (2x img_size)
+        mosaic_size = self.img_size * 2
+        mosaic_img = Image.new('RGB', (mosaic_size, mosaic_size), (114, 114, 114))
+        mosaic_boxes = []
+        mosaic_labels = []
+        
+        # Define quadrants (top-left, top-right, bottom-left, bottom-right)
+        positions = [
+            (0, 0),                          # top-left
+            (self.img_size, 0),              # top-right
+            (0, self.img_size),              # bottom-left
+            (self.img_size, self.img_size)   # bottom-right
+        ]
+        
+        for i, img_idx in enumerate(indices):
+            # Load image without mosaic (avoid recursion)
+            img_id = self.image_ids[img_idx]
+            info = self.image_id_to_info[img_id]
+            anns = self.image_annotations[img_id]
+            
+            img_path = os.path.join(self.root_dir, "images", info["file_name"])
+            image = Image.open(img_path).convert("RGB")
+            image = image.resize((self.img_size, self.img_size))
+            
+            # Parse boxes
+            orig_w, orig_h = self.img_size, self.img_size
+            boxes = []
+            labels = []
+            
+            for ann in anns:
+                cid = ann["category_id"]
+                if cid not in [1, 2]:
+                    continue
+                label = cid - 1
+                
+                x, y, w, h = ann["bbox"]
+                x1 = x / info["width"]
+                y1 = y / info["height"]
+                x2 = (x + w) / info["width"]
+                y2 = (y + h) / info["height"]
+                
+                x1 = max(0, min(1, x1))
+                y1 = max(0, min(1, y1))
+                x2 = max(0, min(1, x2))
+                y2 = max(0, min(1, y2))
+                
+                if x2 > x1 and y2 > y1:
+                    boxes.append([x1, y1, x2, y2])
+                    labels.append(label)
+            
+            # Place image in quadrant
+            paste_x, paste_y = positions[i]
+            mosaic_img.paste(image, (paste_x, paste_y))
+            
+            # Adjust boxes to mosaic coordinates
+            for box, label in zip(boxes, labels):
+                x1, y1, x2, y2 = box
+                # Scale to image size
+                x1 = x1 * self.img_size + paste_x
+                y1 = y1 * self.img_size + paste_y
+                x2 = x2 * self.img_size + paste_x
+                y2 = y2 * self.img_size + paste_y
+                
+                # Normalize to mosaic size
+                mosaic_boxes.append([
+                    x1 / mosaic_size,
+                    y1 / mosaic_size,
+                    x2 / mosaic_size,
+                    y2 / mosaic_size
+                ])
+                mosaic_labels.append(label)
+        
+        # Resize back to img_size
+        mosaic_img = mosaic_img.resize((self.img_size, self.img_size))
+        
+        if len(mosaic_boxes) == 0:
+            mosaic_boxes.append([0.0, 0.0, 0.01, 0.01])
+            mosaic_labels.append(0)
+        
+        return mosaic_img, mosaic_boxes, mosaic_labels
+
     def __getitem__(self, idx):
+        # Mosaic augmentation with probability
+        if self.use_mosaic and random.random() < self.mosaic_prob:
+            image, boxes, labels = self.load_mosaic(idx)
+            boxes = torch.tensor(boxes, dtype=torch.float32)
+            labels = torch.tensor(labels, dtype=torch.int64)
+            
+            # Apply transforms if any
+            if self.transform and self.is_albumentations():
+                image_np = np.array(image)
+                pixel_boxes = [
+                    [b[0] * self.img_size, b[1] * self.img_size, 
+                     b[2] * self.img_size, b[3] * self.img_size]
+                    for b in boxes.tolist()
+                ]
+                
+                transformed = self.transform(
+                    image=image_np,
+                    bboxes=pixel_boxes,
+                    labels=labels.tolist()
+                )
+                
+                image = transformed["image"]
+                if len(transformed["bboxes"]) > 0:
+                    boxes = torch.tensor([
+                        [b[0] / self.img_size, b[1] / self.img_size,
+                         b[2] / self.img_size, b[3] / self.img_size]
+                        for b in transformed["bboxes"]
+                    ], dtype=torch.float32)
+                    labels = torch.tensor(transformed["labels"], dtype=torch.int64)
+            else:
+                # Convert to tensor
+                if isinstance(image, Image.Image):
+                    image = T.ToTensor()(image)
+            
+            return image, {
+                "boxes": boxes,
+                "labels": labels,
+                "image_id": torch.tensor([idx]),
+                "image_path": "mosaic"
+            }
+        
+        # Normal loading (original code)
         img_id = self.image_ids[idx]
         info = self.image_id_to_info[img_id]
         anns = self.image_annotations[img_id]

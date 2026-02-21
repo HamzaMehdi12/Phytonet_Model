@@ -5,7 +5,7 @@ import torch.nn.functional as F
 class DetectionLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0, lambda_box=2.0, lambda_cls=4.0, 
                  lambda_obj=2.0, class_weights=None, num_classes=2,
-                 anchors=None, img_size=224, box_scale=1.0):
+                 anchors=None, img_size=224, box_scale=1.0, label_smoothing=0.05):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -15,6 +15,7 @@ class DetectionLoss(nn.Module):
         self.num_classes = num_classes
         self.img_size = img_size
         self.box_scale = box_scale
+        self.label_smoothing = label_smoothing  # Label smoothing for better generalization
         # Default anchors if not provided (K-means optimized for Tomato_d)
         if anchors is None:
             anchors = [[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
@@ -214,6 +215,10 @@ class DetectionLoss(nn.Module):
         if num_pos > 0:
             pos_pred_cls = pred_cls[pos_mask]      # [num_pos, C]
             pos_target_cls = target_cls[pos_mask]  # [num_pos, C]
+            
+            # Apply label smoothing: 0/1 -> smoothing/(1-smoothing)
+            if self.label_smoothing > 0:
+                pos_target_cls = pos_target_cls * (1 - self.label_smoothing) + self.label_smoothing / self.num_classes
             
             # Use weighted focal loss
             cls_loss = self.weighted_focal_loss(pos_pred_cls, pos_target_cls)
