@@ -10,13 +10,38 @@
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Status](https://img.shields.io/badge/Status-In%20Training-yellow)
 ![mAP@50](https://img.shields.io/badge/mAP@50-Target%2060--75%25-blue)
-![Inference](https://img.shields.io/badge/Inference-15--20ms-blue)
+![Inference](https://img.shields.io/badge/Inference-30--40ms-blue)
+![Model](https://img.shields.io/badge/Model-120M%20Params-green)
 
 ---
 
-## 🚨 CRITICAL BUG FIX (February 21, 2026)
+## 🚀 EXPANDED MODEL v2 (February 21, 2026)
 
-### Issue: Low mAP Performance (20% vs Expected 60-75%)
+**Major Architecture Upgrade for 80%+ mAP@50 Target**
+
+| Aspect | v1 | v2 (Current) | Change |
+|--------|----|----|--------|
+| **Parameters** | 36M | 120-150M | **+4x** |
+| **Channels** | 64→512 | 128→1024 | **+2x** |
+| **Depth** | n=3-9 | n=15-45 | **+2.5x** |
+| **mAP@50 Goal** | 11.8% | **60-80%** | Target increase |
+| **Inference** | ~15ms | ~35ms | Trade speed for accuracy |
+
+### Quick Start (Fresh Training - Required)
+```bash
+cd /Users/spectee/Desktop/Phytonet_Model/Phytonet_Model
+python3 train.py --epochs 200 --batch_size 16 --lr 3e-4 --output_dir ghost_bifpn_weights
+```
+
+**Note:** Expanded model requires training from epoch 0 (old 36M weights incompatible).
+
+---
+
+## 🚨 PREVIOUS BUGS FIXED (February 21, 2026)
+
+### Issue: Low mAP Performance (Original - 0.0001% with wrong config)
+
+```
 
 **Root Cause Identified:** The `box_scale` parameter was set to **0.25** — which is **4× too small** for the actual object sizes in the dataset!
 

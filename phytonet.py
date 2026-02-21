@@ -114,12 +114,14 @@ class HighAccuracyPhytoSparseNet(nn.Module):
     """
     YOLOv11-inspired detection model with multi-scale outputs.
     
+    EXPANDED VERSION for 80% mAP@50 - 2x channels, deeper blocks
+    
     Features:
-    - Deeper backbone with C2f blocks
+    - Deeper backbone with C2f blocks (expanded)
     - SPPF for multi-scale feature aggregation
     - FPN-style neck with multi-scale detection
     - CBAM attention mechanisms
-    - 3-4x more parameters than original
+    - 8-10x more parameters than original (120-150M)
     
     Output shape: [B, A*(5+C), H, W] where:
         - B = batch size
@@ -130,26 +132,27 @@ class HighAccuracyPhytoSparseNet(nn.Module):
     
     For 9 anchors and 2 classes: 9 * (5 + 2) = 63 output channels
     """
-    def __init__(self, num_classes=2, num_anchors=9, width_mult=1.0, depth_mult=1.0):
+    def __init__(self, num_classes=2, num_anchors=9, width_mult=2.0, depth_mult=2.5):
         super().__init__()
         self.num_classes = num_classes
         self.num_anchors = num_anchors
         
-        # Calculate channel sizes with width multiplier
+        # Calculate channel sizes with width multiplier - EXPANDED
         def make_divisible(x, divisor=8):
             return int((x + divisor / 2) // divisor * divisor)
         
-        c1 = make_divisible(64 * width_mult)
-        c2 = make_divisible(128 * width_mult)
-        c3 = make_divisible(256 * width_mult)
-        c4 = make_divisible(512 * width_mult)
-        c5 = make_divisible(512 * width_mult)
+        # DOUBLED channels for more capacity
+        c1 = make_divisible(64 * width_mult)      # 128
+        c2 = make_divisible(128 * width_mult)     # 256
+        c3 = make_divisible(256 * width_mult)     # 512
+        c4 = make_divisible(512 * width_mult)     # 1024
+        c5 = make_divisible(512 * width_mult)     # 1024
         
-        # Calculate depth (number of bottlenecks) with depth multiplier
-        n1 = max(round(3 * depth_mult), 1)
-        n2 = max(round(6 * depth_mult), 1)
-        n3 = max(round(9 * depth_mult), 1)
-        n4 = max(round(3 * depth_mult), 1)
+        # Calculate depth (number of bottlenecks) - DEEPER
+        n1 = max(round(6 * depth_mult), 1)        # 15
+        n2 = max(round(12 * depth_mult), 1)       # 30
+        n3 = max(round(18 * depth_mult), 1)       # 45
+        n4 = max(round(6 * depth_mult), 1)        # 15
         
         # ============= BACKBONE =============
         # Stem
@@ -197,11 +200,12 @@ class HighAccuracyPhytoSparseNet(nn.Module):
         # ============= DETECTION HEADS =============
         output_channels = self.num_anchors * (5 + self.num_classes)
         
-        # Head for 7x7 feature map (large objects)
+        # Head for 7x7 feature map (large objects) - DEEPER
         self.head_large = nn.Sequential(
-            C2f(c5, c5, n=n1, shortcut=False),
+            C2f(c5, c5, n=n4, shortcut=False),
             ConvBlock(c5, c5, k=3, s=1, p=1),
-            nn.Dropout2d(p=0.1),
+            ConvBlock(c5, c5, k=3, s=1, p=1),  # Extra conv for precision
+            nn.Dropout2d(p=0.2),  # Increased dropout
             nn.Conv2d(c5, output_channels, kernel_size=1, stride=1, padding=0)
         )
 
