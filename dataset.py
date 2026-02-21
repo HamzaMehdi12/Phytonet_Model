@@ -21,13 +21,14 @@ class BotanicalDataset(Dataset):
         1 -> Tomato
     """
 
-    def __init__(self, root_dir, img_size=224, mode="train", transform=None, use_mosaic=True, mosaic_prob=0.5):
+    def __init__(self, root_dir, img_size=224, mode="train", transform=None, use_mosaic=True, mosaic_prob=0.5, current_epoch=0):
         self.root_dir = root_dir
         self.img_size = img_size
         self.mode = mode
         self.transform = transform
         self.use_mosaic = use_mosaic and (mode == "train")  # Only use mosaic in training
         self.mosaic_prob = mosaic_prob
+        self.current_epoch = current_epoch  # Track current epoch for mosaic scheduling
 
         # ---------------------------------------------------------
         # Load annotations
@@ -184,8 +185,20 @@ class BotanicalDataset(Dataset):
         return mosaic_img, mosaic_boxes, mosaic_labels
 
     def __getitem__(self, idx):
-        # Mosaic augmentation with probability
-        if self.use_mosaic and random.random() < self.mosaic_prob:
+        # Mosaic augmentation with epoch-based scheduling
+        # Disable mosaic for first 30 epochs to let model learn basics
+        # Then gradually increase probability
+        if self.current_epoch < 30:
+            use_mosaic_this_epoch = False
+        elif self.current_epoch < 60:
+            # Ramp up mosaic from 0% to 50% between epoch 30-60
+            ramp_prob = (self.current_epoch - 30) / 30 * self.mosaic_prob
+            use_mosaic_this_epoch = self.use_mosaic and random.random() < ramp_prob
+        else:
+            # Full mosaic after epoch 60
+            use_mosaic_this_epoch = self.use_mosaic and random.random() < self.mosaic_prob
+        
+        if use_mosaic_this_epoch:
             image, boxes, labels = self.load_mosaic(idx)
             boxes = torch.tensor(boxes, dtype=torch.float32)
             labels = torch.tensor(labels, dtype=torch.int64)

@@ -1195,6 +1195,9 @@ def main():
         for epoch in range(start_epoch, args.epochs + 1):
             epoch_start = time.time()
             
+            # Update dataset with current epoch for mosaic scheduling
+            train_ds.current_epoch = epoch
+            
             # WARMUP: Gradually increase LR for first 10 epochs
             if epoch <= 10:
                 warmup_factor = epoch / 10.0
