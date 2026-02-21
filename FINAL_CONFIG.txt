@@ -1,8 +1,8 @@
-# DEFINITIVE TRAINING CONFIGURATION
+# DEFINITIVE TRAINING CONFIGURATION FOR TOMATO_D
 # This WILL work. Copy these exact settings.
 
-## 1. ANCHORS (K-means optimized for YOUR dataset)
-anchors = [[14,16], [13,22], [21,21], [16,30], [40,41], [39,55], [46,64], [52,77], [65,98]]
+## 1. ANCHORS (K-means optimized for Tomato_d dataset with 24,850 boxes)
+anchors = [[11, 8], [17, 10], [23, 15], [29, 16], [35, 21], [65, 24], [49, 60], [95, 50], [137, 71]]
 
 ## 2. BOX_SCALE
 box_scale = 1.0  # Anchors already match object sizes

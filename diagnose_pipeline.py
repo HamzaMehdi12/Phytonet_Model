@@ -17,8 +17,8 @@ print("="*80)
 print("DIAGNOSTIC: Testing Entire Training Pipeline")
 print("="*80)
 
-# K-means optimized anchors
-ANCHORS = [[14,16], [13,22], [21,21], [16,30], [40,41], [39,55], [46,64], [52,77], [65,98]]
+# K-means optimized anchors for Tomato_d
+ANCHORS = [[11, 8], [17, 10], [23, 15], [29, 16], [35, 21], [65, 24], [49, 60], [95, 50], [137, 71]]
 
 # Step 1: Load data
 print("\n[1/6] Loading dataset...")

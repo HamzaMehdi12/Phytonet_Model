@@ -40,8 +40,8 @@ class NumpyEncoder(json.JSONEncoder):
         return super(NumpyEncoder, self).default(obj)
 
 def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224, 
-                            anchors=[[14,16], [13,22], [21,21], [16,30], [40,41],
-                                     [39,55], [46,64], [52,77], [65,98]],
+                            anchors=[[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
+                                     [65, 24], [49, 60], [95, 50], [137, 71]],
                             num_classes=2):
     """
     Target assignment with class-aware IoU thresholds.
@@ -316,8 +316,8 @@ def create_final_summary(model_info, train_loss_history, val_metrics_history, te
     return summary
 
 def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
-                                anchors=[[14,16], [13,22], [21,21], [16,30], [40,41],
-                                         [39,55], [46,64], [52,77], [65,98]],
+                                anchors=[[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
+                                         [65, 24], [49, 60], [95, 50], [137, 71]],
                                 img_size=224, max_detections=300):
     """Decode network output to normalized boxes [0..1], scores and class ids.
     

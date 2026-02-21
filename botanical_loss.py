@@ -15,10 +15,10 @@ class DetectionLoss(nn.Module):
         self.num_classes = num_classes
         self.img_size = img_size
         self.box_scale = box_scale
-        # Default anchors if not provided (K-means optimized)
+        # Default anchors if not provided (K-means optimized for Tomato_d)
         if anchors is None:
-            anchors = [[14, 16], [13, 22], [21, 21], [16, 30], [40, 41],
-                       [39, 55], [46, 64], [52, 77], [65, 98]]
+            anchors = [[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
+                       [65, 24], [49, 60], [95, 50], [137, 71]]
         self.anchors = torch.tensor(anchors, dtype=torch.float32)
         
         # Normalize class weights if provided
