@@ -1027,14 +1027,14 @@ def main():
     parser.add_argument('--test_dir', default='data_t/test', help='Test dataset directory')
     parser.add_argument('--epochs', type=int, default=300, help='Training epochs')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
-    parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate (3e-4 optimal for AdamW)')
+    parser.add_argument('--lr', type=float, default=2e-3, help='Learning rate (2e-3 for faster convergence)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
     parser.add_argument('--conf_thresh', type=float, default=0.25, help='Confidence Threshold (LOWERED from 0.35)')
     parser.add_argument('--iou_thresh', type=float, default=0.45, help='IOU Threshold')
     parser.add_argument('--output_dir', default='weights', help='Output directory')
     parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
-    parser.add_argument('--accumulate', type=int, default=4, help='Gradient accumulation steps')
+    parser.add_argument('--accumulate', type=int, default=2, help='Gradient accumulation steps (REDUCED for faster updates)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases for logging')
 
     args = parser.parse_args()
@@ -1146,9 +1146,9 @@ def main():
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
-        lambda_box=5.0,       # Box localization
-        lambda_obj=1.0,       # Objectness
-        lambda_cls=1.0,       # Classification
+        lambda_box=7.0,       # Box localization (INCREASED for faster learning)
+        lambda_obj=2.0,       # Objectness (INCREASED for stronger signal)
+        lambda_cls=2.0,       # Classification (INCREASED for faster class learning)
         class_weights=class_weights_tensor,
         num_classes=2,
         anchors=args.anchors,
@@ -1226,9 +1226,9 @@ def main():
             # Update dataset with current epoch for mosaic scheduling
             train_ds.current_epoch = epoch
             
-            # WARMUP: Gradually increase LR for first 10 epochs
-            if epoch <= 10:
-                warmup_factor = epoch / 10.0
+            # WARMUP: Gradually increase LR for first 3 epochs (REDUCED for faster start)
+            if epoch <= 3:
+                warmup_factor = epoch / 3.0
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = args.lr * warmup_factor
                 print(f"Warmup: LR = {args.lr * warmup_factor:.6f}")

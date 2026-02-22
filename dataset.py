@@ -182,16 +182,15 @@ class BotanicalDataset(Dataset):
 
     def __getitem__(self, idx):
         # Mosaic augmentation with epoch-based scheduling
-        # Disable mosaic for first 30 epochs to let model learn basics
-        # Then gradually increase probability
-        if self.current_epoch < 30:
+        # Enable mosaic earlier at epoch 10 for faster learning
+        if self.current_epoch < 10:
             use_mosaic_this_epoch = False
-        elif self.current_epoch < 60:
-            # Ramp up mosaic from 0% to 50% between epoch 30-60
-            ramp_prob = (self.current_epoch - 30) / 30 * self.mosaic_prob
+        elif self.current_epoch < 40:
+            # Ramp up mosaic from 0% to 50% between epoch 10-40
+            ramp_prob = (self.current_epoch - 10) / 30 * self.mosaic_prob
             use_mosaic_this_epoch = self.use_mosaic and random.random() < ramp_prob
         else:
-            # Full mosaic after epoch 60
+            # Full mosaic after epoch 40
             use_mosaic_this_epoch = self.use_mosaic and random.random() < self.mosaic_prob
         
         if use_mosaic_this_epoch:
