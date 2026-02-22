@@ -103,9 +103,11 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # Best anchor is ALWAYS assigned regardless of IoU
             best_anchor = anchor_ious.argmax()
             
-            # BALANCED: Top-3 anchors for both classes (was top-2, too few)
-            # This ensures better anchor diversity without excessive positives
-            top_k = 3  # Best + 2 more = 3 total for both classes
+            # Class-specific anchor assignment to fix stem detection
+            if label_idx == 0:  # stem - needs more positives for small objects
+                top_k = 3
+            else:  # tomato - reduce from 3 to 2 (getting 3x too many)
+                top_k = 2
             
             # Get top-k anchors (includes best)
             _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
@@ -389,10 +391,10 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     class_ids = cls_ids.reshape(-1)
     
     # Class-specific thresholds
-    # CRITICAL FIX: Keep standard confidence for early training
-    # Once model is trained (epoch 50+), can use 1.2x for stricter stems
+    # Stems get lower threshold (they're small, harder to detect with high confidence)
+    # Tomatoes use standard threshold
     class_thresholds = {
-        0: conf_thresh * 1.0,  # stem - standard threshold
+        0: conf_thresh * 0.5,  # stem - 50% of standard (easier to detect)
         1: conf_thresh * 1.0,  # tomato - standard threshold
     }
     
@@ -1038,7 +1040,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--lr', type=float, default=1.2e-3, help='Learning rate (1.2e-3 balanced speed/stability)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
-    parser.add_argument('--conf_thresh', type=float, default=0.15, help='Confidence Threshold (LOWERED to 0.15 for early learning)')
+    parser.add_argument('--conf_thresh', type=float, default=0.25, help='Confidence Threshold')
     parser.add_argument('--iou_thresh', type=float, default=0.45, help='IOU Threshold')
     parser.add_argument('--output_dir', default='weights', help='Output directory')
     parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
@@ -1151,18 +1153,19 @@ def main():
 
     # Create loss function with BETTER BALANCED weights
     # Slight stem boost to improve recall without overwhelming positives
-    class_weights_tensor = torch.tensor([2.0, 1.0], dtype=torch.float32).to(device)  # stem=2x, tomato=1x
+    # CRITICAL: Increase stem weight - model is not detecting stems at all
+    class_weights_tensor = torch.tensor([4.0, 1.0], dtype=torch.float32).to(device)  # stem=4x, tomato=1x
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
         lambda_box=5.0,       # Box localization
-        lambda_obj=3.0,       # Objectness (INCREASED - model needs stronger signal)
-        lambda_cls=3.0,       # Classification (INCREASED - faster class learning)
+        lambda_obj=3.0,       # Objectness
+        lambda_cls=5.0,       # Classification (INCREASED - stem class learning critical)
         class_weights=class_weights_tensor,
         num_classes=2,
         anchors=args.anchors,
         img_size=args.img_size,
-        box_scale=1.0         # OPTIMIZED: K-means anchors designed for scale=1.0
+        box_scale=1.0
     )
     
     print(f"\n{'='*60}")
