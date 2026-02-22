@@ -103,12 +103,9 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # Best anchor is ALWAYS assigned regardless of IoU
             best_anchor = anchor_ious.argmax()
             
-            # ULTRA-SIMPLIFIED: Only assign best + top-1 for BOTH classes
-            # This prevents excessive positives while ensuring coverage
-            if label_idx == 0:  # stem
-                top_k = 2           # best + 1 more = 2 total
-            else:               # tomato
-                top_k = 2           # best + 1 more = 2 total (NO threshold matches)
+            # BALANCED: Top-3 anchors for both classes (was top-2, too few)
+            # This ensures better anchor diversity without excessive positives
+            top_k = 3  # Best + 2 more = 3 total for both classes
             
             # Get top-k anchors (includes best)
             _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
@@ -746,13 +743,38 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                     print(f"Error updating metrics: {e}")
                     continue
                 
-                batch_true_labels = gt_labels.numpy()
-                batch_pred_labels = class_ids.numpy()
+                # FIXED: Match predictions to GT boxes via IoU, not positionally
+                # This computes per-class TP/FP/FN for confusion matrix
+                if len(boxes) > 0 and len(gt_boxes) > 0:
+                    # Compute IoU between all pred and GT boxes
+                    from torchvision.ops import box_iou
+                    ious = box_iou(boxes, gt_boxes)  # [num_preds, num_gts]
+                    
+                    # Match each GT to best pred (if IoU > 0.5)
+                    matched_preds = set()
+                    for gt_idx in range(len(gt_boxes)):
+                        gt_label = gt_labels[gt_idx].item()
+                        best_iou, best_pred_idx = ious[:, gt_idx].max(dim=0)
+                        
+                        if best_iou > 0.5:
+                            pred_label = class_ids[best_pred_idx].item()
+                            all_true_labels.append(gt_label)
+                            all_pred_labels.append(pred_label)
+                            matched_preds.add(best_pred_idx.item())
+                    
+                    # Unmatched predictions = false positives (add to lists)
+                    for pred_idx in range(len(boxes)):
+                        if pred_idx not in matched_preds:
+                            # FP - predict class but no matching GT
+                            pred_label = class_ids[pred_idx].item()
+                            all_pred_labels.append(pred_label)
+                            all_true_labels.append(-1)  # No GT match
                 
-                min_length = min(len(batch_true_labels), len(batch_pred_labels))
-                if min_length > 0:
-                    all_true_labels.extend(batch_true_labels[:min_length])
-                    all_pred_labels.extend(batch_pred_labels[:min_length])
+                elif len(gt_boxes) == 0 and len(boxes) > 0:
+                    # All predictions are FP
+                    for pred_label in class_ids:
+                        all_pred_labels.append(pred_label.item())
+                        all_true_labels.append(-1)
                 
                 # Save detection image for first batch
                 if idx == 0 and phase == 'val':
@@ -786,44 +808,61 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
         try:
             from sklearn.metrics import confusion_matrix
             if len(all_true_labels) > 0 and len(all_pred_labels) > 0:
-                cm = confusion_matrix(all_true_labels, all_pred_labels, labels=list(class_names.keys()))
-                val_metrics['confusion_matrix'] = cm.tolist()
+                # Filter out FP entries (where true_label = -1)
+                # We'll count FP separately, not in confusion matrix
+                valid_indices = [i for i, label in enumerate(all_true_labels) if label != -1]
                 
-                for i, cls_name in class_names.items():
-                    if i < cm.shape[0] and i < cm.shape[1]:
-                        tp = cm[i, i]
-                        fp = cm[:, i].sum() - tp
-                        fn = cm[i, :].sum() - tp
-                        
-                        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-                        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-                        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-                        
-                        val_metrics[f'{cls_name}_precision'] = precision
-                        val_metrics[f'{cls_name}_recall'] = recall
-                        val_metrics[f'{cls_name}_f1'] = f1
-                        val_metrics[f'{cls_name}_tp'] = tp
-                        val_metrics[f'{cls_name}_fp'] = fp
-                        val_metrics[f'{cls_name}_fn'] = fn
-                
-                total_tp = sum([val_metrics[f'{cls_name}_tp'] for cls_name in class_names.values()])
-                total_fp = sum([val_metrics[f'{cls_name}_fp'] for cls_name in class_names.values()])
-                total_fn = sum([val_metrics[f'{cls_name}_fn'] for cls_name in class_names.values()])
-                
-                overall_precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
-                overall_recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
-                overall_f1 = 2 * (overall_precision * overall_recall) / (overall_precision + overall_recall) if (overall_precision + overall_recall) > 0 else 0
-                
-                val_metrics['overall_precision'] = overall_precision
-                val_metrics['overall_recall'] = overall_recall
-                val_metrics['overall_f1'] = overall_f1
-                
-                if phase == 'val':
-                    plot_confusion_matrix(
-                        cm, 
-                        list(class_names.values()), 
-                        os.path.join(args.output_dir, f'confusion_matrix_epoch_{epoch}.png')
-                    )
+                if len(valid_indices) > 0:
+                    filtered_true = [all_true_labels[i] for i in valid_indices]
+                    filtered_pred = [all_pred_labels[i] for i in valid_indices]
+                    
+                    cm = confusion_matrix(filtered_true, filtered_pred, labels=list(class_names.keys()))
+                    val_metrics['confusion_matrix'] = cm.tolist()
+                    
+                    # Count FPs (unmatched predictions)
+                    fp_counts = {}
+                    for i, label in enumerate(all_true_labels):
+                        if label == -1:  # False positive
+                            pred_class = all_pred_labels[i]
+                            fp_counts[pred_class] = fp_counts.get(pred_class, 0) + 1
+                    
+                    for i, cls_name in class_names.items():
+                        if i < cm.shape[0] and i < cm.shape[1]:
+                            tp = cm[i, i]
+                            fp_from_cm = cm[:, i].sum() - tp  # Misclassifications
+                            fp_unmatched = fp_counts.get(i, 0)  # Unmatched predictions
+                            fp = fp_from_cm + fp_unmatched  # Total FP
+                            fn = cm[i, :].sum() - tp
+                            
+                            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+                            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+                            f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+                            
+                            val_metrics[f'{cls_name}_precision'] = precision
+                            val_metrics[f'{cls_name}_recall'] = recall
+                            val_metrics[f'{cls_name}_f1'] = f1
+                            val_metrics[f'{cls_name}_tp'] = int(tp)
+                            val_metrics[f'{cls_name}_fp'] = int(fp)
+                            val_metrics[f'{cls_name}_fn'] = int(fn)
+                    
+                    total_tp = sum([val_metrics[f'{cls_name}_tp'] for cls_name in class_names.values()])
+                    total_fp = sum([val_metrics[f'{cls_name}_fp'] for cls_name in class_names.values()])
+                    total_fn = sum([val_metrics[f'{cls_name}_fn'] for cls_name in class_names.values()])
+                    
+                    overall_precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
+                    overall_recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
+                    overall_f1 = 2 * (overall_precision * overall_recall) / (overall_precision + overall_recall) if (overall_precision + overall_recall) > 0 else 0
+                    
+                    val_metrics['overall_precision'] = overall_precision
+                    val_metrics['overall_recall'] = overall_recall
+                    val_metrics['overall_f1'] = overall_f1
+                    
+                    if phase == 'val':
+                        plot_confusion_matrix(
+                            cm, 
+                            list(class_names.values()), 
+                            os.path.join(args.output_dir, f'confusion_matrix_epoch_{epoch}.png')
+                        )
         except Exception as e:
             print(f"Error calculating confusion matrix: {e}")
         
@@ -999,7 +1038,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--lr', type=float, default=1.2e-3, help='Learning rate (1.2e-3 balanced speed/stability)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
-    parser.add_argument('--conf_thresh', type=float, default=0.25, help='Confidence Threshold (LOWERED from 0.35)')
+    parser.add_argument('--conf_thresh', type=float, default=0.15, help='Confidence Threshold (LOWERED to 0.15 for early learning)')
     parser.add_argument('--iou_thresh', type=float, default=0.45, help='IOU Threshold')
     parser.add_argument('--output_dir', default='weights', help='Output directory')
     parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
@@ -1116,9 +1155,9 @@ def main():
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
-        lambda_box=6.0,       # Box localization (balanced)
-        lambda_obj=1.5,       # Objectness (moderate)
-        lambda_cls=1.5,       # Classification (moderate)
+        lambda_box=5.0,       # Box localization
+        lambda_obj=3.0,       # Objectness (INCREASED - model needs stronger signal)
+        lambda_cls=3.0,       # Classification (INCREASED - faster class learning)
         class_weights=class_weights_tensor,
         num_classes=2,
         anchors=args.anchors,
@@ -1128,9 +1167,9 @@ def main():
     
     print(f"\n{'='*60}")
     print(f"Loss Function Configuration:")
-    print(f"  lambda_box: {loss_fn.lambda_box} (HIGHEST - localization is key)")
-    print(f"  lambda_obj: {loss_fn.lambda_obj} (MEDIUM - detect objects)")
-    print(f"  lambda_cls: {loss_fn.lambda_cls} (LOWER - easier task)")
+    print(f"  lambda_box: {loss_fn.lambda_box} (box localization)")
+    print(f"  lambda_obj: {loss_fn.lambda_obj} (objectness - INCREASED)")
+    print(f"  lambda_cls: {loss_fn.lambda_cls} (classification - INCREASED)")
     print(f"  focal alpha: {loss_fn.alpha}")
     print(f"  focal gamma: {loss_fn.gamma}")
     print(f"  class_weights: stem={class_weights_tensor[0]:.1f}, tomato={class_weights_tensor[1]:.1f}")
