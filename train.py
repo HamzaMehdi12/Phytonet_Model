@@ -103,33 +103,18 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # Best anchor is ALWAYS assigned regardless of IoU
             best_anchor = anchor_ious.argmax()
             
-            # AGGRESSIVE REDUCTION: Assign fewer anchors to reduce positives
-            # Stems: top-2 only with higher IoU threshold
-            # Tomatoes: top-1 with threshold
-            if label_idx == 0:  # stem - REDUCED from top-3 to top-2
-                iou_thresh = 0.35  # RAISED from 0.25 (stricter matching)
-                top_k = 2           # REDUCED from 3
+            # ULTRA-SIMPLIFIED: Only assign best + top-1 for BOTH classes
+            # This prevents excessive positives while ensuring coverage
+            if label_idx == 0:  # stem
+                top_k = 2           # best + 1 more = 2 total
             else:               # tomato
-                iou_thresh = 0.3
-                top_k = 1           # REDUCED from 2
+                top_k = 2           # best + 1 more = 2 total (NO threshold matches)
             
-            # Get top-k anchors
+            # Get top-k anchors (includes best)
             _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
-            # Get anchors above threshold
-            threshold_matches = torch.where(anchor_ious > iou_thresh)[0]
             
-            # Combine: best + top-k (stems skip threshold matches)
-            if label_idx == 0:
-                matching_anchors = torch.cat([
-                    best_anchor.unsqueeze(0),
-                    top_anchors
-                ]).unique()
-            else:
-                matching_anchors = torch.cat([
-                    best_anchor.unsqueeze(0),
-                    top_anchors,
-                    threshold_matches
-                ]).unique()
+            # Use ONLY top-k anchors (no threshold matching)
+            matching_anchors = top_anchors
             
             # NO SPATIAL NEIGHBORS - assign only to center cell
             spatial_cells = [(int(gy), int(gx))]  # Center cell ONLY
