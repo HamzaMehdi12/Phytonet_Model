@@ -107,8 +107,8 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # Stems are small → assign top-3
             # Tomatoes are bigger → assign top-2
             if label_idx == 0:  # stem (small objects need more positives)
-                iou_thresh = 0.15
-                top_k = 5
+                iou_thresh = 0.25
+                top_k = 3
             else:               # tomato
                 iou_thresh = 0.3
                 top_k = 2
@@ -118,12 +118,18 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # Get anchors above threshold
             threshold_matches = torch.where(anchor_ious > iou_thresh)[0]
             
-            # Combine all: best + top-k + threshold
-            matching_anchors = torch.cat([
-                best_anchor.unsqueeze(0),
-                top_anchors,
-                threshold_matches
-            ]).unique()
+            # Combine all: best + top-k (+ threshold for tomatoes only)
+            if label_idx == 0:
+                matching_anchors = torch.cat([
+                    best_anchor.unsqueeze(0),
+                    top_anchors
+                ]).unique()
+            else:
+                matching_anchors = torch.cat([
+                    best_anchor.unsqueeze(0),
+                    top_anchors,
+                    threshold_matches
+                ]).unique()
             
             # TEMPORARILY DISABLED: Spatial neighbors (testing if this causes issues)
             # neighbor_offsets = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
@@ -136,7 +142,7 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # Spatial neighbors for stems to increase positives
             spatial_cells = [(int(gy), int(gx))]  # Center cell
             if label_idx == 0:
-                neighbor_offsets = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+                neighbor_offsets = [(-1,0), (0,-1), (0,1), (1,0)]
                 for dy, dx in neighbor_offsets:
                     ny, nx = int(gy) + dy, int(gx) + dx
                     if 0 <= ny < H and 0 <= nx < W:
@@ -1135,8 +1141,8 @@ def main():
         print(f"Model output shape: {test_output.shape}")
 
     # Create loss function with BETTER BALANCED weights
-    # Moderate stem boost to recover stem recall without FP explosion
-    class_weights_tensor = torch.tensor([3.0, 1.0], dtype=torch.float32).to(device)  # stem=3x, tomato=1x
+    # Slight stem boost to improve recall without overwhelming positives
+    class_weights_tensor = torch.tensor([2.0, 1.0], dtype=torch.float32).to(device)  # stem=2x, tomato=1x
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
