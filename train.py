@@ -103,22 +103,22 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # Best anchor is ALWAYS assigned regardless of IoU
             best_anchor = anchor_ious.argmax()
             
-            # SIMPLIFIED: Assign top-k anchors based on IoU
-            # Stems are small → assign top-3
-            # Tomatoes are bigger → assign top-2
-            if label_idx == 0:  # stem (small objects need more positives)
-                iou_thresh = 0.25
-                top_k = 3
+            # AGGRESSIVE REDUCTION: Assign fewer anchors to reduce positives
+            # Stems: top-2 only with higher IoU threshold
+            # Tomatoes: top-1 with threshold
+            if label_idx == 0:  # stem - REDUCED from top-3 to top-2
+                iou_thresh = 0.35  # RAISED from 0.25 (stricter matching)
+                top_k = 2           # REDUCED from 3
             else:               # tomato
                 iou_thresh = 0.3
-                top_k = 2
+                top_k = 1           # REDUCED from 2
             
             # Get top-k anchors
             _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
             # Get anchors above threshold
             threshold_matches = torch.where(anchor_ious > iou_thresh)[0]
             
-            # Combine all: best + top-k (+ threshold for tomatoes only)
+            # Combine: best + top-k (stems skip threshold matches)
             if label_idx == 0:
                 matching_anchors = torch.cat([
                     best_anchor.unsqueeze(0),
@@ -131,22 +131,8 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
                     threshold_matches
                 ]).unique()
             
-            # TEMPORARILY DISABLED: Spatial neighbors (testing if this causes issues)
-            # neighbor_offsets = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
-            # spatial_cells = [(int(gy), int(gx))]  # Center cell
-            # for dy, dx in neighbor_offsets:
-            #     ny, nx = int(gy) + dy, int(gx) + dx
-            #     if 0 <= ny < H and 0 <= nx < W:
-            #         spatial_cells.append((ny, nx))
-            
-            # Spatial neighbors for stems to increase positives
-            spatial_cells = [(int(gy), int(gx))]  # Center cell
-            if label_idx == 0:
-                neighbor_offsets = [(-1,0), (0,-1), (0,1), (1,0)]
-                for dy, dx in neighbor_offsets:
-                    ny, nx = int(gy) + dy, int(gx) + dx
-                    if 0 <= ny < H and 0 <= nx < W:
-                        spatial_cells.append((ny, nx))
+            # NO SPATIAL NEIGHBORS - assign only to center cell
+            spatial_cells = [(int(gy), int(gx))]  # Center cell ONLY
             
             for anchor_idx in matching_anchors:
                 anchor_idx = int(anchor_idx.item())
@@ -987,12 +973,11 @@ def create_optimizer_and_scheduler(model, args):
     )
     
     # Cosine annealing with warm restarts
-    # CRITICAL FIX: eta_min=0.01 dropped LR to 3e-6 by epoch 100 (FROZEN learning)
-    # Changed to 0.1 so eta_min = base_lr * 0.1 = 3e-5 (still can learn)
+    # FIXED: Use longer cycle and higher eta_min to prevent premature LR decay
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
-        T_max=args.patience * 2,  # 40 epochs per cycle
-        eta_min=base_lr * 0.1    # Min LR is 10% of base (was 1%, too aggressive)
+        T_max=100,              # Full cycle over 100 epochs (was 40, too short)
+        eta_min=base_lr * 0.2   # Min LR is 20% of base (was 10%, too low)
     )
     
     return optimizer, scheduler
@@ -1027,7 +1012,7 @@ def main():
     parser.add_argument('--test_dir', default='data_t/test', help='Test dataset directory')
     parser.add_argument('--epochs', type=int, default=300, help='Training epochs')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
-    parser.add_argument('--lr', type=float, default=2e-3, help='Learning rate (2e-3 for faster convergence)')
+    parser.add_argument('--lr', type=float, default=1.2e-3, help='Learning rate (1.2e-3 balanced speed/stability)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
     parser.add_argument('--conf_thresh', type=float, default=0.25, help='Confidence Threshold (LOWERED from 0.35)')
     parser.add_argument('--iou_thresh', type=float, default=0.45, help='IOU Threshold')
@@ -1146,9 +1131,9 @@ def main():
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
-        lambda_box=7.0,       # Box localization (INCREASED for faster learning)
-        lambda_obj=2.0,       # Objectness (INCREASED for stronger signal)
-        lambda_cls=2.0,       # Classification (INCREASED for faster class learning)
+        lambda_box=6.0,       # Box localization (balanced)
+        lambda_obj=1.5,       # Objectness (moderate)
+        lambda_cls=1.5,       # Classification (moderate)
         class_weights=class_weights_tensor,
         num_classes=2,
         anchors=args.anchors,
