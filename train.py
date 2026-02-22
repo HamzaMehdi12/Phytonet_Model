@@ -1211,7 +1211,7 @@ def main():
             print(f"RESUMING FROM CHECKPOINT: {latest_checkpoint_path}")
             print(f"{'='*60}\n")
             
-            checkpoint = torch.load(latest_checkpoint_path, map_location=device)
+            checkpoint = torch.load(latest_checkpoint_path, map_location=device, weights_only=False)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
@@ -1472,7 +1472,7 @@ def main():
     best_model_path = os.path.join(args.output_dir, 'best_model.pth')
     if os.path.exists(best_model_path):
         try:
-            model.load_state_dict(torch.load(best_model_path, map_location=device))
+            model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=False))
             print(f"Loaded best model from epoch {best_epoch} for testing")
         except Exception as e:
             print(f"Error loading best model: {e}")
