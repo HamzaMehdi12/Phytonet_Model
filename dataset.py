@@ -178,10 +178,6 @@ class BotanicalDataset(Dataset):
         # Resize back to img_size
         mosaic_img = mosaic_img.resize((self.img_size, self.img_size))
         
-        if len(mosaic_boxes) == 0:
-            mosaic_boxes.append([0.0, 0.0, 0.01, 0.01])
-            mosaic_labels.append(0)
-        
         return mosaic_img, mosaic_boxes, mosaic_labels
 
     def __getitem__(self, idx):
@@ -200,8 +196,12 @@ class BotanicalDataset(Dataset):
         
         if use_mosaic_this_epoch:
             image, boxes, labels = self.load_mosaic(idx)
-            boxes = torch.tensor(boxes, dtype=torch.float32)
-            labels = torch.tensor(labels, dtype=torch.int64)
+            if len(boxes) == 0:
+                boxes = torch.zeros((0, 4), dtype=torch.float32)
+                labels = torch.zeros((0,), dtype=torch.int64)
+            else:
+                boxes = torch.tensor(boxes, dtype=torch.float32)
+                labels = torch.tensor(labels, dtype=torch.int64)
             
             # Apply transforms if any
             if self.transform and self.is_albumentations():
@@ -226,6 +226,9 @@ class BotanicalDataset(Dataset):
                         for b in transformed["bboxes"]
                     ], dtype=torch.float32)
                     labels = torch.tensor(transformed["labels"], dtype=torch.int64)
+                else:
+                    boxes = torch.zeros((0, 4), dtype=torch.float32)
+                    labels = torch.zeros((0,), dtype=torch.int64)
             else:
                 # Convert to tensor
                 if isinstance(image, Image.Image):
@@ -279,8 +282,8 @@ class BotanicalDataset(Dataset):
                 labels.append(label)
         
         if len(boxes) == 0:
-            boxes.append([0.0, 0.0, 0.01, 0.01])
-            labels.append(0)
+            boxes = []
+            labels = []
 
         # -----------------------------------------------------
         # Transforms

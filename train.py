@@ -1091,10 +1091,25 @@ def main():
 
     class_weights = calculate_class_weights(train_ds).to(device)
 
+    # Weighted sampling to boost stem-containing images
+    stem_weights = []
+    for img_id in train_ds.image_ids:
+        anns = train_ds.image_annotations.get(img_id, [])
+        stem_count = sum(1 for ann in anns if ann.get("category_id") == 1)
+        # Base weight 1.0, add 2.0 per stem instance
+        stem_weights.append(1.0 + 2.0 * stem_count)
+
+    sampler = WeightedRandomSampler(
+        weights=stem_weights,
+        num_samples=len(stem_weights),
+        replacement=True
+    )
+
     train_loader = DataLoader(
         train_ds, 
         batch_size=args.batch_size, 
-        shuffle=True, 
+        shuffle=False, 
+        sampler=sampler,
         collate_fn=collate_fn, 
         num_workers=4, 
         pin_memory=True,
