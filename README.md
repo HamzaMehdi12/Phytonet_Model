@@ -15,6 +15,9 @@
 
 ---
 
+## 📄 Project Documents
+- [README.md](README.md)
+
 ## 🚀 OPTIMIZED MODEL v2 (February 21, 2026)
 
 **Custom PhytoNet Architecture - YOLOv8m-Sized for Edge + High mAP**
@@ -75,76 +78,6 @@ quantized_model = torch.quantization.quantize_dynamic(
 
 ---
 
-## 🔧 Previous Bug Fixes (February 21, 2026)
-
-### Issue: Low mAP Performance (Original - 0.0001% with wrong config)
-
-```
-
-**Root Cause Identified:** The `box_scale` parameter was set to **0.25** — which is **4× too small** for the actual object sizes in the dataset!
-
-#### Object Size Analysis (224×224 normalized input)
-| Object Type | Annotations | Width (median) | Height (median) | Size Range |
-|------------|-------------|----------------|-----------------|------------|
-| **Stems** | 1,259 | 14.7 px | 20.5 px | 0.5×0.7 to 34.8×42.4 |
-| **Tomatoes** | 1,509 | 43.4 px | 60.7 px | 18.4×24.0 to 81.2×113.6 |
-
-#### The Problem
-With `box_scale=0.25`, effective anchor sizes were:
-```
-[2.5×3, 4×4.5, 6×7, 8×9, 12×13, 16×17, 20×21, 24×25, 28×29]
-Maximum: 28×29 pixels
-```
-
-**This meant:**
-- ❌ Median tomatoes (43×61 px) had **NO matching anchors**
-- ❌ Large tomatoes (81×114 px) were **impossible to detect**
-- ❌ Model was physically unable to predict correctly-sized boxes
-
-#### The Fix
-Changed `box_scale` from **0.25 → 0.5** (optimized middle ground) in all files:
-- ✅ `train.py` (line 1155) - Loss function initialization
-- ✅ `train.py` (line 374) - Box decoding function
-- ✅ `botanical_loss.py` (line 8) - Default parameter
-- ✅ `inference.py` (line 72) - Inference decoding
-
-**New effective anchor sizes (box_scale=0.5):**
-```
-[5×6, 8×9, 12×14, 16×18, 24×26, 32×34, 40×42, 48×50, 56×58]
-```
-
-**This properly covers:**
-- ✅ Stems (15×21 px) → matched by [16×18, 24×26]
-- ✅ Tomatoes (43×61 px) → matched by [40×42, 48×50, 56×58]
-
-#### Additional Aggressive Improvements (No Model Size Increase)
-
-**1. Enhanced Target Assignment:**
-- Top-5 anchors for stems (was 3), Top-4 for tomatoes (was 2)
-- Lower IoU thresholds: stems=0.15 (was 0.2), tomatoes=0.2 (was 0.3)
-- Spatial neighbor assignment: 3×3 grid around each object with soft targets (0.5 confidence)
-- **Result:** 3-5× more positive training samples per object
-
-**2. Rebalanced Loss Weights:**
-```python
-lambda_box = 8.0   # Increased from 5.0 (localization is CRITICAL)
-lambda_obj = 3.0   # Increased from 2.0 (detect objects first)
-lambda_cls = 0.5   # Reduced from 1.0 (easier task, learn later)
-```
-
-**3. Learning Rate Warmup:**
-- Epochs 1-10: Gradual LR ramp from 0.0002 → 0.002 (10× increase)
-- Prevents early training collapse
-- Better gradient flow in first epochs
-
-**4. Stem Class Boost:**
-- Stem class weight: 10.0 (was 8.0)
-- Ensures tiny stems get learned despite class imbalance
-
-**5. Progressive Confidence Thresholds:**
-| Epoch Range | conf_thresh | Purpose |
-|-------------|-------------|---------|
-| 1-20 | 0.15 | Very permissive - learn to detect |
 | 20-50 | 0.25 | Moderate - improve quality |
 | 50-150 | 0.30 | Standard - balanced |
 | 150+ | 0.35 | Strict - high precision |
@@ -170,6 +103,7 @@ python3 train.py --epochs 300 --batch_size 16 --lr 2e-4 --patience 40
 ---
 
 ## 📋 Table of Contents
+- [Project Documents](#-project-documents)
 - [Overview](#-overview)
 - [Key Features](#-key-features)
 - [Architecture](#-architecture)
