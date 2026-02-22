@@ -106,12 +106,12 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # SIMPLIFIED: Assign top-k anchors based on IoU
             # Stems are small → assign top-3
             # Tomatoes are bigger → assign top-2
-            if label_idx == 0:  # stem
-                iou_thresh = 0.3
-                top_k = 3
-            else:               # tomato
-                iou_thresh = 0.3
-                top_k = 2
+                if label_idx == 0:  # stem (small objects need more positives)
+                    iou_thresh = 0.15
+                    top_k = 5
+                else:               # tomato
+                    iou_thresh = 0.3
+                    top_k = 2
             
             # Get top-k anchors
             _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
@@ -133,22 +133,30 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             #     if 0 <= ny < H and 0 <= nx < W:
             #         spatial_cells.append((ny, nx))
             
-            for anchor_idx in matching_anchors:
-                anchor_idx = int(anchor_idx.item())
-                
-                # Assign to center cell only
-                idx_center = anchor_idx * H * W + int(gy) * W + int(gx)
-                label_idx_clamped = max(0, min(label_idx, num_classes - 1))
-                
-                target_obj[b, idx_center] = 1.0
-                target_cls[b, idx_center, label_idx_clamped] = 1.0
-                target_boxes[b, idx_center] = gt_boxes[i]
-                total_positives += 1
-                
+                # Spatial neighbors for stems to increase positives
+                spatial_cells = [(int(gy), int(gx))]  # Center cell
                 if label_idx == 0:
-                    stem_positives += 1
-                else:
-                    tomato_positives += 1
+                    neighbor_offsets = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+                    for dy, dx in neighbor_offsets:
+                        ny, nx = int(gy) + dy, int(gx) + dx
+                        if 0 <= ny < H and 0 <= nx < W:
+                            spatial_cells.append((ny, nx))
+            
+                for anchor_idx in matching_anchors:
+                    anchor_idx = int(anchor_idx.item())
+                    label_idx_clamped = max(0, min(label_idx, num_classes - 1))
+                
+                    for sy, sx in spatial_cells:
+                        idx_center = anchor_idx * H * W + int(sy) * W + int(sx)
+                        target_obj[b, idx_center] = 1.0
+                        target_cls[b, idx_center, label_idx_clamped] = 1.0
+                        target_boxes[b, idx_center] = gt_boxes[i]
+                        total_positives += 1
+                    
+                        if label_idx == 0:
+                            stem_positives += 1
+                        else:
+                            tomato_positives += 1
     
     # Diagnostic - show per-class positives
     if batch_size > 0:
@@ -1112,9 +1120,8 @@ def main():
         print(f"Model output shape: {test_output.shape}")
 
     # Create loss function with BETTER BALANCED weights
-    # SIMPLIFIED LOSS WEIGHTS - Stop overthinking!
-    # Using 1.0x for both: let model learn naturally first, no class weighting bias
-    class_weights_tensor = torch.tensor([1.0, 1.0], dtype=torch.float32).to(device)  # Equal weights
+    # Moderate stem boost to recover stem recall without FP explosion
+    class_weights_tensor = torch.tensor([3.0, 1.0], dtype=torch.float32).to(device)  # stem=3x, tomato=1x
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
