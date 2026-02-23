@@ -106,8 +106,8 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # Class-specific anchor assignment to fix stem detection
             if label_idx == 0:  # stem - needs more positives for small objects
                 top_k = 3
-            else:  # tomato - reduce from 3 to 2 (getting 3x too many)
-                top_k = 2
+            else:  # tomato - REDUCED from 2→1 (EPOCH 28 FIX: cut FP flood)
+                top_k = 1
             
             # Get top-k anchors (includes best)
             _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
@@ -390,12 +390,12 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     # This ensures we don't filter out true positives too early
     class_ids = cls_ids.reshape(-1)
     
-    # Class-specific thresholds
-    # Stems get lower threshold (they're small, harder to detect with high confidence)
-    # Tomatoes use standard threshold
+    # Class-specific thresholds (SCENARIO A+ - aggressive filtering)
+    # Stems: LOWER threshold (0.08 @ conf=0.35) to allow weak stems, NMS handles noise
+    # Tomatoes: HIGHER threshold (0.49 @ conf=0.35) to suppress tomato FP flood
     class_thresholds = {
-        0: conf_thresh * 0.5,  # stem - 50% of standard (easier to detect)
-        1: conf_thresh * 1.0,  # tomato - standard threshold
+        0: conf_thresh * 0.23,  # stem - 0.08 @ conf=0.35 (allows weak stems)
+        1: conf_thresh * 1.4,   # tomato - 0.49 @ conf=0.35 (much stricter tomato filtering)
     }
     
     # Apply class-specific thresholds
@@ -1038,10 +1038,10 @@ def main():
     parser.add_argument('--test_dir', default='data_t/test', help='Test dataset directory')
     parser.add_argument('--epochs', type=int, default=300, help='Training epochs')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
-    parser.add_argument('--lr', type=float, default=1.2e-3, help='Learning rate (1.2e-3 balanced speed/stability)')
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (BALANCED 1e-3 - faster convergence, not too aggressive)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
-    parser.add_argument('--conf_thresh', type=float, default=0.25, help='Confidence Threshold')
-    parser.add_argument('--iou_thresh', type=float, default=0.45, help='IOU Threshold')
+    parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
+    parser.add_argument('--iou_thresh', type=float, default=0.55, help='IOU Threshold (RAISED 0.50→0.55 for aggressive NMS)')
     parser.add_argument('--output_dir', default='weights', help='Output directory')
     parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
@@ -1052,14 +1052,14 @@ def main():
     
     # CRITICAL: Print actual arguments being used
     print(f"\n{'='*60}")
-    print(f"TRAINING CONFIGURATION")
+    print(f"TRAINING CONFIGURATION (BALANCED SCENARIO A+)")
     print(f"{'='*60}")
-    print(f"Learning Rate: {args.lr:.2e} (user provided or default)")
+    print(f"Learning Rate: {args.lr:.2e} (BALANCED 1e-3)")
     print(f"Batch Size: {args.batch_size}")
     print(f"Image Size: {args.img_size}")
     print(f"Epochs: {args.epochs}")
     print(f"Conf Thresh: {args.conf_thresh}")
-    print(f"IOU Thresh: {args.iou_thresh}")
+    print(f"IOU Thresh: {args.iou_thresh} (AGGRESSIVE NMS)")
     print(f"AMP Enabled: {args.amp}")
     print(f"Gradient Accumulation: {args.accumulate}")
     print(f"Effective Batch Size: {args.batch_size * args.accumulate}")
@@ -1151,16 +1151,16 @@ def main():
     else:
         print(f"Model output shape: {test_output.shape}")
 
-    # Create loss function with BETTER BALANCED weights
-    # Slight stem boost to improve recall without overwhelming positives
-    # CRITICAL: Increase stem weight - model is not detecting stems at all
-    class_weights_tensor = torch.tensor([4.0, 1.0], dtype=torch.float32).to(device)  # stem=4x, tomato=1x
+    # Create loss function with BALANCED STEM BOOST
+    # SCENARIO A+ BALANCED: Aggressive but not overwhelming
+    # Stem weight 6x (down from 8x) - strong but not extreme
+    class_weights_tensor = torch.tensor([6.0, 1.0], dtype=torch.float32).to(device)  # stem=6x, tomato=1x
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
-        lambda_box=5.0,       # Box localization
-        lambda_obj=3.0,       # Objectness
-        lambda_cls=5.0,       # Classification (INCREASED - stem class learning critical)
+        lambda_box=5.0,       # Box localization (keep stable)
+        lambda_obj=3.0,       # Objectness (keep stable)
+        lambda_cls=6.0,       # Classification (BALANCED 8.0→6.0 to prevent gradient conflict)
         class_weights=class_weights_tensor,
         num_classes=2,
         anchors=args.anchors,
@@ -1169,13 +1169,13 @@ def main():
     )
     
     print(f"\n{'='*60}")
-    print(f"Loss Function Configuration:")
+    print(f"Loss Function Configuration (BALANCED SCENARIO A+):")
     print(f"  lambda_box: {loss_fn.lambda_box} (box localization)")
-    print(f"  lambda_obj: {loss_fn.lambda_obj} (objectness - INCREASED)")
-    print(f"  lambda_cls: {loss_fn.lambda_cls} (classification - INCREASED)")
+    print(f"  lambda_obj: {loss_fn.lambda_obj} (objectness)")
+    print(f"  lambda_cls: {loss_fn.lambda_cls} (classification - BALANCED at 6.0)")
     print(f"  focal alpha: {loss_fn.alpha}")
     print(f"  focal gamma: {loss_fn.gamma}")
-    print(f"  class_weights: stem={class_weights_tensor[0]:.1f}, tomato={class_weights_tensor[1]:.1f}")
+    print(f"  class_weights: stem={class_weights_tensor[0]:.1f} (BALANCED 8→6), tomato={class_weights_tensor[1]:.1f}")
     print(f"{'='*60}\n")
 
     optimizer, scheduler = create_optimizer_and_scheduler(model, args)
@@ -1238,12 +1238,14 @@ def main():
             # Update dataset with current epoch for mosaic scheduling
             train_ds.current_epoch = epoch
             
-            # WARMUP: Gradually increase LR for first 3 epochs (REDUCED for faster start)
+            # WARMUP: Gradually increase LR for first 3 epochs (EXPONENTIAL - prevents loss spikes)
             if epoch <= 3:
-                warmup_factor = epoch / 3.0
+                # Exponential warmup: e^(2*epoch/3) gives smoother ramp-up
+                warmup_factor = (2.718 ** (2.0 * epoch / 3.0)) / (2.718 ** 2.0)  # maps to [0.135, 1.0]
+                warmup_factor = max(0.1, min(1.0, warmup_factor))  # clamp to [0.1, 1.0]
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = args.lr * warmup_factor
-                print(f"Warmup: LR = {args.lr * warmup_factor:.6f}")
+                print(f"Exponential Warmup: LR = {args.lr * warmup_factor:.6f} (factor={warmup_factor:.3f})")
             
             loss_fn = adjust_weights(epoch, loss_fn, args.conf_thresh, device)
             
