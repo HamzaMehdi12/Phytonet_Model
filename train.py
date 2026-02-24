@@ -103,17 +103,23 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # Best anchor is ALWAYS assigned regardless of IoU
             best_anchor = anchor_ious.argmax()
             
-            # Class-specific anchor assignment to fix stem detection
-            if label_idx == 0:  # stem - needs more positives for small objects
-                top_k = 3
-            else:  # tomato - REDUCED from 2→1 (EPOCH 28 FIX: cut FP flood)
+            # Class-specific anchor assignment to reduce FP flood
+            if label_idx == 0:  # stem - needs positives but limit over-assignment
+                top_k = 2
+                iou_thresh = 0.20
+            else:  # tomato - keep strict to cut FP flood
                 top_k = 1
+                iou_thresh = 0.30
             
             # Get top-k anchors (includes best)
             _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
             
-            # Use ONLY top-k anchors (no threshold matching)
-            matching_anchors = top_anchors
+            # Use top-k anchors that pass IoU threshold
+            matching_anchors = [a for a in top_anchors if anchor_ious[a] >= iou_thresh]
+            
+            # Always include best anchor even if it fails threshold
+            if best_anchor not in matching_anchors:
+                matching_anchors = list(matching_anchors) + [best_anchor]
             
             # NO SPATIAL NEIGHBORS - assign only to center cell
             spatial_cells = [(int(gy), int(gx))]  # Center cell ONLY
@@ -304,7 +310,7 @@ def create_final_summary(model_info, train_loss_history, val_metrics_history, te
 def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
                                 anchors=[[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
                                          [65, 24], [49, 60], [95, 50], [137, 71]],
-                                img_size=224, max_detections=300):
+                                img_size=224, max_detections=300, use_class_thresholds=True):
     """Decode network output to normalized boxes [0..1], scores and class ids.
     
     CRITICAL: Model outputs RAW logits (tx, ty, tw, th, to_logit, cls_logits)
@@ -390,21 +396,24 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     # This ensures we don't filter out true positives too early
     class_ids = cls_ids.reshape(-1)
     
-    # Class-specific thresholds (SCENARIO A+ - aggressive filtering)
-    # Stems: LOWER threshold (0.08 @ conf=0.35) to allow weak stems, NMS handles noise
-    # Tomatoes: HIGHER threshold (0.49 @ conf=0.35) to suppress tomato FP flood
-    class_thresholds = {
-        0: conf_thresh * 0.23,  # stem - 0.08 @ conf=0.35 (allows weak stems)
-        1: conf_thresh * 1.4,   # tomato - 0.49 @ conf=0.35 (much stricter tomato filtering)
-    }
-    
-    # Apply class-specific thresholds
-    adjusted_thresh = torch.tensor([
-        class_thresholds.get(int(cls_id.item()), conf_thresh) 
-        for cls_id in class_ids
-    ], device=device)
-    
-    keep_mask = scores > adjusted_thresh
+    if use_class_thresholds:
+        # Class-specific thresholds (SCENARIO A+ - aggressive filtering)
+        # Stems: LOWER threshold (0.08 @ conf=0.35) to allow weak stems, NMS handles noise
+        # Tomatoes: HIGHER threshold (0.49 @ conf=0.35) to suppress tomato FP flood
+        class_thresholds = {
+            0: conf_thresh * 0.23,  # stem - 0.08 @ conf=0.35 (allows weak stems)
+            1: conf_thresh * 1.4,   # tomato - 0.49 @ conf=0.35 (much stricter tomato filtering)
+        }
+        
+        # Apply class-specific thresholds
+        adjusted_thresh = torch.tensor([
+            class_thresholds.get(int(cls_id.item()), conf_thresh) 
+            for cls_id in class_ids
+        ], device=device)
+        keep_mask = scores > adjusted_thresh
+    else:
+        # Uniform threshold for evaluation (preserve recall for mAP)
+        keep_mask = scores > conf_thresh
     
     if keep_mask.sum() == 0:
         return (torch.empty((0, 4), device=device), 
@@ -710,10 +719,11 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                 # Decode predictions
                 boxes, scores, class_ids = decode_predictions_advanced(
                     output_tensor, 
-                    conf_thresh=args.conf_thresh,
+                    conf_thresh=0.05,
                     iou_thresh=args.iou_thresh,
                     anchors=args.anchors,
-                    img_size=args.img_size
+                    img_size=args.img_size,
+                    use_class_thresholds=False
                 )
                 
                 boxes = boxes.cpu()
@@ -1041,7 +1051,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (BALANCED 1e-3 - faster convergence, not too aggressive)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
     parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
-    parser.add_argument('--iou_thresh', type=float, default=0.55, help='IOU Threshold (RAISED 0.50→0.55 for aggressive NMS)')
+    parser.add_argument('--iou_thresh', type=float, default=0.45, help='IOU Threshold (LOWERED 0.55→0.45 for stronger NMS suppression)')
     parser.add_argument('--output_dir', default='weights', help='Output directory')
     parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
@@ -1059,7 +1069,7 @@ def main():
     print(f"Image Size: {args.img_size}")
     print(f"Epochs: {args.epochs}")
     print(f"Conf Thresh: {args.conf_thresh}")
-    print(f"IOU Thresh: {args.iou_thresh} (AGGRESSIVE NMS)")
+    print(f"IOU Thresh: {args.iou_thresh} (STRONG NMS)")
     print(f"AMP Enabled: {args.amp}")
     print(f"Gradient Accumulation: {args.accumulate}")
     print(f"Effective Batch Size: {args.batch_size * args.accumulate}")
@@ -1304,10 +1314,13 @@ def main():
                     else:
                         output_shape = outputs.shape
                     
+                    # IMPORTANT: Use current_size for anchor normalization during multi-scale training
+                    loss_fn.img_size = current_size
+
                     target_dict = prepare_targets_for_loss(
                                     device_targets, 
                                     output_shape, 
-                                    img_size=args.img_size, 
+                                    img_size=current_size, 
                                     anchors=args.anchors,
                                     num_classes=2
                                 )
