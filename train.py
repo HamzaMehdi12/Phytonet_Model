@@ -310,7 +310,8 @@ def create_final_summary(model_info, train_loss_history, val_metrics_history, te
 def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
                                 anchors=[[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
                                          [65, 24], [49, 60], [95, 50], [137, 71]],
-                                img_size=224, max_detections=300, use_class_thresholds=True, box_scale=1.0):
+                                img_size=224, max_detections=300, use_class_thresholds=True, box_scale=1.0,
+                                apply_nms=True):
     """Decode network output to normalized boxes [0..1], scores and class ids.
     
     CRITICAL: Model outputs RAW logits (tx, ty, tw, th, to_logit, cls_logits)
@@ -423,31 +424,44 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     scores = scores[keep_mask]
     class_ids = class_ids[keep_mask]
 
-    # Convert to pixel coordinates for NMS
-    abs_boxes = boxes * img_size
+    if apply_nms:
+        # Convert to pixel coordinates for NMS
+        abs_boxes = boxes * img_size
 
-    # Class-specific NMS
-    final_boxes = []
-    final_scores = []
-    final_classes = []
+        # Class-specific NMS
+        final_boxes = []
+        final_scores = []
+        final_classes = []
 
-    unique_classes = class_ids.unique()
-    for c in unique_classes:
-        cls_mask = (class_ids == c)
-        cls_boxes = abs_boxes[cls_mask]
-        cls_scores = scores[cls_mask]
-        
-        if cls_boxes.numel() == 0:
-            continue
-        
-        # Use provided iou_thresh for all classes
-        keep = nms(cls_boxes, cls_scores, iou_thresh)
-        keep = keep[:max_detections]
-        
-        final_boxes.append(cls_boxes[keep])
-        final_scores.append(cls_scores[keep])
-        final_classes.append(torch.full((len(keep),), int(c.item()), 
-                                       dtype=torch.int64, device=device))
+        unique_classes = class_ids.unique()
+        for c in unique_classes:
+            cls_mask = (class_ids == c)
+            cls_boxes = abs_boxes[cls_mask]
+            cls_scores = scores[cls_mask]
+            
+            if cls_boxes.numel() == 0:
+                continue
+            
+            # Use provided iou_thresh for all classes
+            keep = nms(cls_boxes, cls_scores, iou_thresh)
+            keep = keep[:max_detections]
+            
+            final_boxes.append(cls_boxes[keep])
+            final_scores.append(cls_scores[keep])
+            final_classes.append(torch.full((len(keep),), int(c.item()), 
+                                           dtype=torch.int64, device=device))
+    else:
+        # No NMS: keep top-k by score
+        if scores.numel() > max_detections:
+            topk = torch.topk(scores, max_detections)
+            keep = topk.indices
+            boxes = boxes[keep]
+            scores = scores[keep]
+            class_ids = class_ids[keep]
+
+        final_boxes = [boxes * img_size]
+        final_scores = [scores]
+        final_classes = [class_ids]
 
     if len(final_boxes) == 0:
         return (torch.empty((0, 4), device=device), 
@@ -727,7 +741,8 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                     img_size=args.img_size,
                     max_detections=100,
                     use_class_thresholds=False,
-                    box_scale=args.box_scale
+                    box_scale=args.box_scale,
+                    apply_nms=False
                 )
 
                 # Debug: check score distribution at low threshold (val only, first batch)
@@ -740,7 +755,8 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                         img_size=args.img_size,
                         max_detections=100,
                         use_class_thresholds=False,
-                        box_scale=args.box_scale
+                        box_scale=args.box_scale,
+                        apply_nms=False
                     )
                     if len(dbg_scores) > 0:
                         print(f"VAL DEBUG: preds@0.01={len(dbg_scores)} | score_max={dbg_scores.max().item():.4f} | score_mean={dbg_scores.mean().item():.4f}")
