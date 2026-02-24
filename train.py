@@ -1072,7 +1072,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (BALANCED 1e-3 - faster convergence, not too aggressive)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
     parser.add_argument('--model', type=str, default='base', choices=['base', 'strong'], help='Model variant')
-    parser.add_argument('--box_scale', type=float, default=1.6, help='Box scale (increase to correct under-sized boxes)')
+    parser.add_argument('--box_scale', type=float, default=1.3, help='Box scale (increase to correct under-sized boxes)')
     parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
     parser.add_argument('--eval_conf_thresh', type=float, default=0.01, help='Eval Confidence Threshold (LOW for mAP/PR computation)')
     parser.add_argument('--iou_thresh', type=float, default=0.35, help='IOU Threshold (LOWERED 0.45→0.35 for maximum NMS suppression)')
@@ -1198,8 +1198,8 @@ def main():
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
-        lambda_box=12.0,      # Box localization (BOOST to improve IoU)
-        lambda_obj=1.5,       # Objectness (reduced to focus on boxes)
+        lambda_box=8.0,       # Box localization (balanced)
+        lambda_obj=2.0,       # Objectness (balanced)
         lambda_cls=6.0,       # Classification (BALANCED 8.0→6.0 to prevent gradient conflict)
         class_weights=class_weights_tensor,
         num_classes=2,
