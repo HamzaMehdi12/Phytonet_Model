@@ -202,8 +202,16 @@ class HighAccuracyPhytoSparseNet(nn.Module):
         # ============= DETECTION HEADS =============
         output_channels = self.num_anchors * (5 + self.num_classes)
         
-        # Head for 7x7 feature map (large objects) - WITH mAP BOOSTING
-        # Extra conv layers + higher dropout for better precision
+        # Head for 14x14 feature map (better for small objects like stems)
+        self.head_medium = nn.Sequential(
+            C2f(c4, c4, n=n4, shortcut=False),
+            ConvBlock(c4, c4, k=3, s=1, p=1),
+            ConvBlock(c4, c4, k=1, s=1, p=0),
+            nn.Dropout2d(p=0.10),
+            nn.Conv2d(c4, output_channels, kernel_size=1, stride=1, padding=0)
+        )
+
+        # Head for 7x7 feature map (large objects)
         self.head_large = nn.Sequential(
             C2f(c5, c5, n=n4, shortcut=False),
             ConvBlock(c5, c5, k=3, s=1, p=1),
@@ -218,7 +226,7 @@ class HighAccuracyPhytoSparseNet(nn.Module):
             x: Input tensor [B, 3, H, W]
         
         Returns:
-            Output tensor [B, A*(5+C), 7, 7] (using only large head for compatibility)
+            Output tensor [B, A*(5+C), 14, 14] (using medium head for small objects)
             
             The output is organized as:
             [B, A*(5+C), H, W] where for each anchor:
@@ -248,10 +256,10 @@ class HighAccuracyPhytoSparseNet(nn.Module):
         
         # Detection heads - outputs RAW logits
         # Loss function handles sigmoid/activations internally
-        output_large = self.head_large(p5)   # [B, 63, 7, 7]
+        output_medium = self.head_medium(p4)  # [B, 63, 14, 14]
         
-        # Return only the large head tensor (not a dict!)
-        return output_large
+        # Return medium head tensor for better small-object localization
+        return output_medium
 
 
 class HighAccuracyPhytoSparseNetDict(nn.Module):
