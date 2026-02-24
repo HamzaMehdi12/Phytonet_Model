@@ -680,7 +680,11 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
     
     try:
         from torchmetrics.detection import MeanAveragePrecision
-        map_metric = MeanAveragePrecision(class_metrics=True)
+        map_metric = MeanAveragePrecision(
+            class_metrics=True,
+            max_detection_thresholds=[100],
+            warn_on_many_detections=False
+        )
         
         with torch.no_grad():
             for idx, (imgs, targets) in enumerate(dataloader):
@@ -719,10 +723,11 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                 # Decode predictions
                 boxes, scores, class_ids = decode_predictions_advanced(
                     output_tensor, 
-                    conf_thresh=0.05,
+                    conf_thresh=0.35,
                     iou_thresh=args.iou_thresh,
                     anchors=args.anchors,
                     img_size=args.img_size,
+                    max_detections=100,
                     use_class_thresholds=False
                 )
                 
