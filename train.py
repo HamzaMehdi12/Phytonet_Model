@@ -389,8 +389,8 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
 
     cls_scores, cls_ids = cls_prob.max(dim=-1)
 
-    # Combined confidence score (stricter: product reduces FP flood)
-    scores = obj_prob * cls_scores
+    # Combined confidence score (balanced: improves early recall)
+    scores = torch.sqrt(obj_prob * cls_scores)
     
     # CRITICAL FIX: Use LOWER confidence threshold for initial filtering
     # This ensures we don't filter out true positives too early
@@ -401,8 +401,8 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
         # Stems: moderate threshold to avoid FP flood while keeping recall
         # Tomatoes: stricter threshold to suppress tomato FP flood
         class_thresholds = {
-            0: conf_thresh * 0.45,  # stem - 0.16 @ conf=0.35
-            1: conf_thresh * 2.0,   # tomato - 0.70 @ conf=0.35
+            0: conf_thresh * 0.25,  # stem - 0.09 @ conf=0.35
+            1: conf_thresh * 1.2,   # tomato - 0.42 @ conf=0.35
         }
         
         # Apply class-specific thresholds
@@ -726,7 +726,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                     iou_thresh=args.iou_thresh,
                     anchors=args.anchors,
                     img_size=args.img_size,
-                    max_detections=50,
+                    max_detections=300,
                     use_class_thresholds=True
                 )
                 
