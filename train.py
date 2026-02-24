@@ -387,8 +387,16 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     boxes = torch.stack([x1, y1, x2, y2], dim=-1).clamp(0, 1)
 
     # Get objectness and class probabilities (BCE loss expects sigmoid per class)
+
     obj_prob = torch.sigmoid(to).reshape(-1)
     cls_prob = torch.sigmoid(tcls).reshape(-1, num_classes)
+
+    # [DIAGNOSTIC] Print objectness and class score stats for first batch in validation
+    import inspect
+    stack = inspect.stack()
+    if any('validate_model' in frame.function for frame in stack):
+        print(f"[DIAGNOSTIC] Objectness: max={obj_prob.max().item():.4f}, mean={obj_prob.mean().item():.4f}")
+        print(f"[DIAGNOSTIC] Class prob: max={cls_prob.max().item():.4f}, mean={cls_prob.mean().item():.4f}")
 
     cls_scores, cls_ids = cls_prob.max(dim=-1)
 
@@ -750,6 +758,10 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                     class_ids = class_ids.cpu()
                     gt_boxes = targets[b]['boxes'].cpu()
                     gt_labels = targets[b]['labels'].cpu()
+
+                    # [DIAGNOSTIC] Print number of predictions and GTs for first 3 images in validation
+                    if idx < 3 and b == 0:
+                        print(f"[DIAGNOSTIC] Image {idx}: {len(boxes)} predictions, {len(gt_boxes)} GTs")
                     # ...existing code for metrics, confusion matrix, etc...
                 
                 if len(boxes) == 0:
