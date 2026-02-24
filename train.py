@@ -1119,27 +1119,48 @@ def main():
     if args.use_wandb:
         wandb_logger = setup_wandb(args)
     
+
     train_ds = BotanicalDataset(
         args.train_dir, 
         img_size=args.img_size, 
         mode='train', 
         transform=create_diverse_augmentations(args.img_size)
     )
-    print("\nChecking dataset labels...")
+    val_ds = BotanicalDataset(args.val_dir, img_size=args.img_size, mode='val')
+    test_ds = BotanicalDataset(args.test_dir, img_size=args.img_size, mode='test')
+
+    print("\n[DIAGNOSTIC] Dataset sizes:")
+    print(f"  Train: {len(train_ds)} images")
+    print(f"  Val:   {len(val_ds)} images")
+    print(f"  Test:  {len(test_ds)} images")
+
+    print("\n[DIAGNOSTIC] Checking dataset labels...")
     all_labels = []
     for i in range(min(100, len(train_ds))):
         _, target = train_ds[i]
         all_labels.extend(target['labels'].tolist())
-
     unique_labels = set(all_labels)
-    print(f"Unique labels: {sorted(unique_labels)}")
-
+    print(f"  Unique labels in first 100 train samples: {sorted(unique_labels)}")
     if unique_labels != {0, 1}:
         print("✗ CRITICAL ERROR: Labels must be [0, 1]!")
         print(f"Your labels are: {sorted(unique_labels)}")
         exit()
-    val_ds = BotanicalDataset(args.val_dir, img_size=args.img_size, mode='val')
-    test_ds = BotanicalDataset(args.test_dir, img_size=args.img_size, mode='test')
+
+    print("\n[DIAGNOSTIC] Printing 3 sample targets from train set:")
+    for i in range(min(3, len(train_ds))):
+        _, target = train_ds[i]
+        print(f"Sample {i}: boxes={target['boxes']}, labels={target['labels']}")
+
+    print("\n[DIAGNOSTIC] Visualizing first batch from train and val set...")
+    from pathlib import Path
+    train_loader_diag = DataLoader(train_ds, batch_size=1, shuffle=False, collate_fn=collate_fn)
+    val_loader_diag = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_fn)
+    train_imgs, train_targets = next(iter(train_loader_diag))
+    val_imgs, val_targets = next(iter(val_loader_diag))
+    Path("diagnostics").mkdir(exist_ok=True)
+    save_detection_image(train_imgs[0], train_targets[0], ([], [], []), "diagnostics/train_sample.jpg", {0: "stem", 1: "tomato"}, img_size=args.img_size)
+    save_detection_image(val_imgs[0], val_targets[0], ([], [], []), "diagnostics/val_sample.jpg", {0: "stem", 1: "tomato"}, img_size=args.img_size)
+    print("  Saved diagnostics/train_sample.jpg and diagnostics/val_sample.jpg (no predictions, just GT boxes)")
 
     class_weights = calculate_class_weights(train_ds).to(device)
 
@@ -1297,6 +1318,7 @@ def main():
             epoch_box = 0.0
             train_bar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")
             optimizer.zero_grad()
+
             for batch_idx, (imgs, targets) in enumerate(train_bar):
                 # Multi-scale training - randomly resize images every 10 batches
                 if batch_idx % 10 == 0:
@@ -1307,13 +1329,13 @@ def main():
                     current_size = max(192, min(320, (current_size // 32) * 32))
                 else:
                     current_size = args.img_size
-                
+
                 # Resize if needed
                 if current_size != imgs.shape[-1]:
                     imgs = F.interpolate(imgs, size=current_size, mode='bilinear', align_corners=False)
-                
+
                 imgs = imgs.to(device, non_blocking=True)
-                
+
                 device_targets = []
                 for target in targets:
                     device_target = {
@@ -1322,20 +1344,15 @@ def main():
                         'image_path': target.get('image_path', '')
                     }
                     device_targets.append(device_target)
-                
+
                 with autocast(enabled=amp_enabled):
                     outputs = model(imgs)
-                    
-                    # Convert to dict format (handles both dict and tensor inputs)
                     pred_dict = prepare_predictions_for_loss(outputs, num_classes=2)
-                    
-                    # Get shape for target preparation directly from outputs
                     if isinstance(outputs, dict):
                         batch_size = pred_dict['pred_boxes'].shape[0]
                         num_cells = pred_dict['pred_boxes'].shape[1]
                         num_anchors = len(args.anchors)
                         num_classes = 2
-                        # Robustly infer H, W from num_cells and anchors
                         if num_cells % num_anchors != 0:
                             raise ValueError(f"num_cells ({num_cells}) not divisible by num_anchors ({num_anchors})")
                         HW = num_cells // num_anchors
@@ -1343,45 +1360,41 @@ def main():
                         output_shape = (batch_size, num_anchors * (5 + num_classes), H, W)
                     else:
                         output_shape = outputs.shape
-                    
-                    # IMPORTANT: Use current_size for anchor normalization during multi-scale training
+
                     loss_fn.img_size = current_size
                     loss_fn.box_scale = args.box_scale
 
                     target_dict = prepare_targets_for_loss(
-                                    device_targets, 
-                                    output_shape, 
-                                    img_size=current_size, 
-                                    anchors=args.anchors,
-                                    num_classes=2
-                                )
-                    
-                    # Call loss function with dict inputs
-                    #target_dict_1 = prepare_targets_for_loss(...)
-                    #num_pos = (target_dict_1['obj'] > 0.5).sum().item()
-                    #num_images = len(device_targets)
-                    #print(f"Positive samples: {num_pos} ({num_pos/num_images:.1f} per image)")
+                        device_targets,
+                        output_shape,
+                        img_size=current_size,
+                        anchors=args.anchors,
+                        num_classes=2
+                    )
 
                     loss, cls_loss, obj_loss, box_loss = loss_fn(pred_dict, target_dict)
-                
+
                 if torch.isnan(loss).any() or torch.isinf(loss).any():
                     print(f"Invalid loss detected in batch {batch_idx}, skipping")
                     optimizer.zero_grad()
                     continue
-                
+
                 scaled_loss = loss / args.accumulate
-                
+
                 if amp_enabled:
                     scaler.scale(scaled_loss).backward()
                 else:
                     scaled_loss.backward()
-                # Only unscale and clip before optimizer step, not every backward
+
+                # [DIAGNOSTIC] Print loss components for first few batches
+                if batch_idx < 3:
+                    print(f"[DIAGNOSTIC][Batch {batch_idx}] loss={loss.item():.4f}, cls_loss={cls_loss.item():.4f}, obj_loss={obj_loss.item():.4f}, box_loss={box_loss.item():.4f}")
 
                 epoch_loss += loss.item()
                 epoch_obj += obj_loss.item()
                 epoch_cls += cls_loss.item()
                 epoch_box += box_loss.item()
-                
+
                 avg_loss = epoch_loss / (batch_idx + 1)
                 train_bar.set_postfix({
                     'loss': f'{avg_loss:.3f}',
@@ -1390,11 +1403,11 @@ def main():
                     'box': f'{epoch_box/(batch_idx+1):.3f}',
                     'lr': f'{optimizer.param_groups[0]["lr"]:.1e}'
                 })
-                
+
                 if (batch_idx + 1) % args.accumulate == 0:
                     if amp_enabled:
                         scaler.unscale_(optimizer)
-                    
+
                     has_bad_grads, grad_norm = stabilize_gradients(model, max_norm=1.0, debug=False)
 
                     if has_bad_grads:
@@ -1410,7 +1423,7 @@ def main():
                         if amp_enabled:
                             scaler.update()
                         continue
-                    
+
                     if amp_enabled:
                         scaler.step(optimizer)
                         scaler.update()
@@ -1418,7 +1431,6 @@ def main():
                     else:
                         optimizer.step()
                         did_step = True
-                    # Only update EMA if optimizer.step() was performed
                     if did_step:
                         with torch.no_grad():
                             for ema_param, param in zip(ema_model.parameters(), model.parameters()):
