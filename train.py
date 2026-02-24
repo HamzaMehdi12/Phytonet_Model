@@ -59,7 +59,10 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
     
     anchors_t = torch.tensor(anchors, dtype=torch.float32, device=device)
     A = anchors_t.shape[0]
-    
+
+    # Use the actual img_size (current_size) for anchor normalization and grid assignment
+    grid_img_size = img_size
+
     target_obj = torch.zeros(batch_size, A * H * W, device=device)
     target_cls = torch.zeros(batch_size, A * H * W, num_classes, device=device)
     target_boxes = torch.zeros(batch_size, A * H * W, 4, device=device)
@@ -83,7 +86,7 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
         grid_x = (gt_cx * W).long().clamp(0, W-1)
         grid_y = (gt_cy * H).long().clamp(0, H-1)
         
-        anchors_norm = anchors_t / float(img_size)
+        anchors_norm = anchors_t / float(grid_img_size)
         
         for i, (gx, gy, gw, gh, label) in enumerate(zip(grid_x, grid_y, gt_w, gt_h, gt_labels)):
             anchor_ious = []
@@ -693,30 +696,26 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
     
     try:
         from torchmetrics.detection import MeanAveragePrecision
+        # Use a uniform IoU threshold for mAP@50
         map_metric = MeanAveragePrecision(
             class_metrics=True,
-            max_detection_thresholds=[50, 100, 300]
+            iou_thresholds=0.5
         )
         
         with torch.no_grad():
             for idx, (imgs, targets) in enumerate(dataloader):
                 imgs = imgs.to(device)
-                
-                # Get model output
+                # Get model output for the whole batch
                 model_output = model(imgs)
-                
-                # Extract tensor for decoding
                 # Handle multi-scale dict output
                 if isinstance(model_output, dict):
                     if 'large' in model_output:
-                        # Multi-scale output - use large head
                         output_tensor = model_output['large']
                     elif 'pred_boxes' in model_output:
-                        # Already prediction dict - convert back to tensor
                         output_tensor = convert_dict_to_tensor(
-                            model_output, 
-                            num_classes=2, 
-                            H=7, 
+                            model_output,
+                            num_classes=2,
+                            H=7,
                             W=7
                         )
                     else:
@@ -727,28 +726,18 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                 else:
                     print(f"Unexpected model output type: {type(model_output)}")
                     continue
-                
-                # Extract first image from batch if needed
-                if output_tensor.dim() == 4:
-                    output_tensor = output_tensor[0]  # [B,C,H,W] -> [C,H,W]
-                
-                # Decode predictions
-                boxes, scores, class_ids = decode_predictions_advanced(
-                    output_tensor, 
-                    conf_thresh=args.eval_conf_thresh,
-                    iou_thresh=args.iou_thresh,
-                    anchors=args.anchors,
-                    img_size=args.img_size,
-                    max_detections=100,
-                    use_class_thresholds=False,
-                    box_scale=args.box_scale
-                )
 
-                # Debug: check score distribution at low threshold (val only, first batch)
-                if idx == 0 and phase == 'val':
-                    dbg_boxes, dbg_scores, _ = decode_predictions_advanced(
-                        output_tensor,
-                        conf_thresh=0.01,
+                # Loop over all images in the batch
+                batch_size = imgs.shape[0]
+                for b in range(batch_size):
+                    if output_tensor.dim() == 4:
+                        single_output = output_tensor[b]
+                    else:
+                        single_output = output_tensor
+                    # Decode predictions for this image
+                    boxes, scores, class_ids = decode_predictions_advanced(
+                        single_output,
+                        conf_thresh=args.eval_conf_thresh,
                         iou_thresh=args.iou_thresh,
                         anchors=args.anchors,
                         img_size=args.img_size,
@@ -756,17 +745,12 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                         use_class_thresholds=False,
                         box_scale=args.box_scale
                     )
-                    if len(dbg_scores) > 0:
-                        print(f"VAL DEBUG: preds@0.01={len(dbg_scores)} | score_max={dbg_scores.max().item():.4f} | score_mean={dbg_scores.mean().item():.4f}")
-                    else:
-                        print("VAL DEBUG: 0 preds even at conf_thresh=0.01")
-                
-                boxes = boxes.cpu()
-                scores = scores.cpu()
-                class_ids = class_ids.cpu()
-                
-                gt_boxes = targets[0]['boxes'].cpu()
-                gt_labels = targets[0]['labels'].cpu()
+                    boxes = boxes.cpu()
+                    scores = scores.cpu()
+                    class_ids = class_ids.cpu()
+                    gt_boxes = targets[b]['boxes'].cpu()
+                    gt_labels = targets[b]['labels'].cpu()
+                    # ...existing code for metrics, confusion matrix, etc...
                 
                 if len(boxes) == 0:
                     boxes = torch.empty((0, 4))
@@ -1286,12 +1270,11 @@ def main():
             start_epoch = 1
     
     try:
+        scaler = GradScaler(enabled=amp_enabled, init_scale=2.**12)  # 4096 - reduce overflow
         for epoch in range(start_epoch, args.epochs + 1):
             epoch_start = time.time()
-            
             # Update dataset with current epoch for mosaic scheduling
             train_ds.current_epoch = epoch
-            
             # WARMUP: Gradually increase LR for first 3 epochs (EXPONENTIAL - prevents loss spikes)
             if epoch <= 3:
                 # Exponential warmup: e^(2*epoch/3) gives smoother ramp-up
@@ -1300,22 +1283,20 @@ def main():
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = args.lr * warmup_factor
                 print(f"Exponential Warmup: LR = {args.lr * warmup_factor:.6f} (factor={warmup_factor:.3f})")
-            
+                # Integrate warmup with scheduler if supported
+                try:
+                    scheduler.step(epoch)
+                except TypeError:
+                    # If scheduler does not accept epoch argument, skip during warmup
+                    pass
             loss_fn = adjust_weights(epoch, loss_fn, args.conf_thresh, device)
-            
             model.train()
-            
             epoch_loss = 0.0
             epoch_obj = 0.0
             epoch_cls = 0.0
             epoch_box = 0.0
-            
             train_bar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")
-            
             optimizer.zero_grad()
-            
-            scaler = GradScaler(enabled=amp_enabled, init_scale=2.**12)  # 4096 - reduce overflow
-
             for batch_idx, (imgs, targets) in enumerate(train_bar):
                 # Multi-scale training - randomly resize images every 10 batches
                 if batch_idx % 10 == 0:
@@ -1348,13 +1329,18 @@ def main():
                     # Convert to dict format (handles both dict and tensor inputs)
                     pred_dict = prepare_predictions_for_loss(outputs, num_classes=2)
                     
-                    # Get shape for target preparation
+                    # Get shape for target preparation directly from outputs
                     if isinstance(outputs, dict):
-                        # Estimate shape from dict
                         batch_size = pred_dict['pred_boxes'].shape[0]
                         num_cells = pred_dict['pred_boxes'].shape[1]
-                        H = W = int((num_cells / 9) ** 0.5)  # Assuming 9 anchors
-                        output_shape = (batch_size, 9 * 7, H, W)  # 9 anchors, 7 = 5 + 2 classes
+                        num_anchors = len(args.anchors)
+                        num_classes = 2
+                        # Robustly infer H, W from num_cells and anchors
+                        if num_cells % num_anchors != 0:
+                            raise ValueError(f"num_cells ({num_cells}) not divisible by num_anchors ({num_anchors})")
+                        HW = num_cells // num_anchors
+                        H = W = int(HW ** 0.5)
+                        output_shape = (batch_size, num_anchors * (5 + num_classes), H, W)
                     else:
                         output_shape = outputs.shape
                     
@@ -1387,9 +1373,9 @@ def main():
                 
                 if amp_enabled:
                     scaler.scale(scaled_loss).backward()
+                    scaler.unscale_(optimizer)
                 else:
                     scaled_loss.backward()
-                
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
 
                 epoch_loss += loss.item()
@@ -1429,21 +1415,24 @@ def main():
                     if amp_enabled:
                         scaler.step(optimizer)
                         scaler.update()
+                        did_step = True
                     else:
                         optimizer.step()
-                    
-                    # Update EMA model
-                    with torch.no_grad():
-                        for ema_param, param in zip(ema_model.parameters(), model.parameters()):
-                            ema_param.data.mul_(ema_decay).add_(param.data, alpha=1 - ema_decay)
-                    
+                        did_step = True
+                    # Only update EMA if optimizer.step() was performed
+                    if did_step:
+                        with torch.no_grad():
+                            for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+                                ema_param.data.mul_(ema_decay).add_(param.data, alpha=1 - ema_decay)
                     optimizer.zero_grad()
                     
-            try:
-                scheduler.step()
-            except Exception as e:
-                print("Error in scheduler step!")
-                raise Exception(e)
+            # Only step scheduler after warmup epochs
+            if epoch > 3:
+                try:
+                    scheduler.step()
+                except Exception as e:
+                    print("Error in scheduler step!")
+                    raise Exception(e)
             
             num_batches = len(train_loader)
             avg_loss = epoch_loss / num_batches
@@ -1667,13 +1656,35 @@ def main():
                     box_scale=args.box_scale
                 )
                 
-                class_ids = class_ids.cpu().numpy()
-                gt_labels = targets[0]['labels'].cpu().numpy()
-                
-                min_length = min(len(gt_labels), len(class_ids))
-                if min_length > 0:
-                    all_true_labels_test.extend(gt_labels[:min_length])
-                    all_pred_labels_test.extend(class_ids[:min_length])
+                gt_boxes = targets[0]['boxes'].cpu()
+                gt_labels = targets[0]['labels'].cpu()
+                pred_boxes = boxes.cpu()
+                pred_labels = class_ids.cpu()
+
+                # IoU-based matching for confusion matrix
+                from torchvision.ops import box_iou
+                if len(pred_boxes) > 0 and len(gt_boxes) > 0:
+                    ious = box_iou(pred_boxes, gt_boxes)  # [num_preds, num_gts]
+                    matched_preds = set()
+                    for gt_idx in range(len(gt_boxes)):
+                        gt_label = gt_labels[gt_idx].item()
+                        best_iou, best_pred_idx = ious[:, gt_idx].max(dim=0)
+                        if best_iou > 0.5:
+                            pred_label = pred_labels[best_pred_idx].item()
+                            all_true_labels_test.append(gt_label)
+                            all_pred_labels_test.append(pred_label)
+                            matched_preds.add(best_pred_idx.item())
+                    # Unmatched predictions = false positives
+                    for pred_idx in range(len(pred_boxes)):
+                        if pred_idx not in matched_preds:
+                            pred_label = pred_labels[pred_idx].item()
+                            all_pred_labels_test.append(pred_label)
+                            all_true_labels_test.append(-1)
+                elif len(gt_boxes) == 0 and len(pred_boxes) > 0:
+                    # All predictions are FP
+                    for pred_label in pred_labels:
+                        all_pred_labels_test.append(pred_label.item())
+                        all_true_labels_test.append(-1)
         
         if len(all_true_labels_test) > 0 and len(all_pred_labels_test) > 0:
             cm_test = confusion_matrix(all_true_labels_test, all_pred_labels_test, labels=list(class_names.keys()))
