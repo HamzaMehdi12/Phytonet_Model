@@ -383,14 +383,14 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
 
     boxes = torch.stack([x1, y1, x2, y2], dim=-1).clamp(0, 1)
 
-    # Get objectness and class probabilities
+    # Get objectness and class probabilities (BCE loss expects sigmoid per class)
     obj_prob = torch.sigmoid(to).reshape(-1)
-    cls_prob = torch.softmax(tcls, dim=-1).reshape(-1, num_classes)
+    cls_prob = torch.sigmoid(tcls).reshape(-1, num_classes)
 
     cls_scores, cls_ids = cls_prob.max(dim=-1)
 
-    # Combined confidence score (balanced: improves early recall)
-    scores = torch.sqrt(obj_prob * cls_scores)
+    # Combined confidence score (stricter: reduce FP flood)
+    scores = obj_prob * cls_scores
     
     # CRITICAL FIX: Use LOWER confidence threshold for initial filtering
     # This ensures we don't filter out true positives too early
