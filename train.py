@@ -725,7 +725,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                     iou_thresh=args.iou_thresh,
                     anchors=args.anchors,
                     img_size=args.img_size,
-                    max_detections=300,
+                    max_detections=100,
                     use_class_thresholds=False,
                     box_scale=args.box_scale
                 )
@@ -738,7 +738,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                         iou_thresh=args.iou_thresh,
                         anchors=args.anchors,
                         img_size=args.img_size,
-                        max_detections=300,
+                        max_detections=100,
                         use_class_thresholds=False,
                         box_scale=args.box_scale
                     )
