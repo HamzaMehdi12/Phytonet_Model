@@ -56,6 +56,19 @@
     - Epoch 3 LR factor: 1.000 (full power)
 - **Impact**: Loss should now decline smoothly from epoch 4+ onwards ✓
 
+### ✅ Phase 6: Stem Class Weight Maximized & Mosaic Disabled
+**Problem**: Extreme stem/tomato imbalance (1:12) required stronger compensation
+- **Solution**: Stem class weight set to 12x, tomato 1x in DetectionLoss; weighted sampling for stem images
+- **Impact**: Stem detection now prioritized, metrics balanced
+
+**Augmentation**: Mosaic augmentation fully disabled for current run; only minimal augmentations (horizontal flip, resize, normalize, tensor) used
+
+**NMS**: Robust automatic NMS applied to all predictions
+
+**Model**: Using strong variant for maximum accuracy
+
+**Future Roadmap**: Once balanced results are achieved, mosaic and advanced augmentations will be reintroduced, and new model innovations will be explored for further robustness.
+
 ---
 
 ## 🔧 Current Training Configuration (BALANCED SCENARIO A+)
@@ -85,7 +98,7 @@ lambda_box:           10.0  (box localization - BOOSTED)
 lambda_obj:           2.0   (objectness - reduced)
 lambda_cls:           6.0   (classification - BALANCED from 8.0)
 
-Class Weights:        [6.0, 1.0]  (stem 6x, tomato 1x)
+Class Weights:        [12.0, 1.0]  (stem 12x, tomato 1x)
 Focal Loss Alpha:     0.25
 Focal Loss Gamma:     2.0
 
@@ -130,9 +143,10 @@ With balanced settings and exponential warmup, expected metrics are:
 
 **Tomato_d Dataset:**
 - 3000 total images
-- 2 classes: stem (small, challenging) and tomato (large, easier)
+- 2 classes: stem (small, challenging, heavily imbalanced) and tomato (large, easier)
 - Split: train (70%) / val (15%) / test (15%)
 - Annotation format: YOLO format with COCO JSON
+- Class imbalance: stem:tomato ratio is 1:12 (addressed with class weights and sampling)
 
 **K-means Optimized Anchors** (9 anchors, 100% coverage):
 ```python
@@ -167,13 +181,13 @@ With balanced settings and exponential warmup, expected metrics are:
 - ✅ **Strategic dropout (0.15)** - Prevents overfitting on small datasets
 
 ### mAP Boosting Techniques (Implemented) ✅
-1. **Mosaic Augmentation** - Combines 4 images into 1 (YOLOv4/v5 technique)
+1. **Mosaic Augmentation** - (Disabled for current run; will be reintroduced for robustness)
 2. **Multi-Scale Training** - Random image sizes (192-320px)
 3. **EMA (Exponential Moving Average)** - Smoothed model weights
 4. **Label Smoothing (0.05)** - Prevents overconfidence
 5. **K-means optimized anchors** - Matched to Tomato_d dataset
-6. **Focal loss with class balancing** - Handles class imbalance
-7. **Advanced augmentation** - Color jitter, geometric transforms
+6. **Focal loss with class balancing** - Handles class imbalance (stem=12x, tomato=1x)
+7. **Minimal augmentation** - Only horizontal flip, resize, normalize, tensor (current run)
 8. **Gradient stabilization** - Prevents training collapse
 9. **Class-specific confidence thresholds** - Optimized per-class filtering
 10. **Exponential warmup** - Smooth early-epoch training (NEW in Phase 5)

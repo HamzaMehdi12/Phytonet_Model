@@ -1169,7 +1169,7 @@ def main():
     # Create loss function with BALANCED STEM BOOST
     # SCENARIO A+ BALANCED: Aggressive but not overwhelming
     # Stem weight 6x (down from 8x) - strong but not extreme
-    class_weights_tensor = torch.tensor([6.0, 1.0], dtype=torch.float32).to(device)  # stem=6x, tomato=1x
+    class_weights_tensor = torch.tensor([12.0, 1.0], dtype=torch.float32).to(device)  # stem=12x, tomato=1x
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
