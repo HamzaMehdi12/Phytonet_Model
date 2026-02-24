@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class DetectionLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0, lambda_box=2.0, lambda_cls=4.0, 
+    def __init__(self, alpha=0.25, gamma=2.0, lambda_box=10.0, lambda_cls=4.0, 
                  lambda_obj=2.0, class_weights=None, num_classes=2,
-                 anchors=None, img_size=224, box_scale=1.0, label_smoothing=0.0):
+                 anchors=None, img_size=224, box_scale=1.0, label_smoothing=0.01):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma

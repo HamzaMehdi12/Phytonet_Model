@@ -95,32 +95,46 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
                 union = gw * gh + aw * ah - inter
                 iou = inter / (union + 1e-6)
                 anchor_ious.append(iou.item())
+            
             anchor_ious = torch.tensor(anchor_ious, device=device)
+            
             label_idx = int(label.item())
+            
+            # Best anchor is ALWAYS assigned regardless of IoU
             best_anchor = anchor_ious.argmax()
-            # Unified stricter IoU threshold for both classes
-            iou_thresh = 0.40
-            # Only anchors above threshold
-            matching_anchors = (anchor_ious > iou_thresh).nonzero(as_tuple=False).flatten()
-            # Fallback: assign best anchor if IoU > 0.30
-            if matching_anchors.numel() == 0 and anchor_ious[best_anchor] > 0.30:
-                matching_anchors = torch.tensor([best_anchor], device=device)
-            elif matching_anchors.numel() == 0:
-                continue
-            # Limit number of positives per GT to 3
-            if matching_anchors.numel() > 3:
-                topk = torch.topk(anchor_ious[matching_anchors], 3)
-                matching_anchors = matching_anchors[topk.indices]
-            spatial_cells = [(int(gy), int(gx))]
+            
+            # Class-specific anchor assignment to reduce FP flood
+            if label_idx == 0:  # stem - controlled positives
+                top_k = 2
+                iou_thresh = 0.25
+            else:  # tomato - stricter to cut FP flood
+                top_k = 1
+                iou_thresh = 0.40
+            
+            # Get top-k anchors (includes best)
+            _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
+            
+            # Use top-k anchors that pass IoU threshold
+            matching_anchors = [a for a in top_anchors if anchor_ious[a] >= iou_thresh]
+            
+            # Always include best anchor even if it fails threshold
+            if best_anchor not in matching_anchors:
+                matching_anchors = list(matching_anchors) + [best_anchor]
+            
+            # NO SPATIAL NEIGHBORS - assign only to center cell
+            spatial_cells = [(int(gy), int(gx))]  # Center cell ONLY
+            
             for anchor_idx in matching_anchors:
                 anchor_idx = int(anchor_idx.item())
                 label_idx_clamped = max(0, min(label_idx, num_classes - 1))
+                
                 for sy, sx in spatial_cells:
                     idx_center = anchor_idx * H * W + int(sy) * W + int(sx)
                     target_obj[b, idx_center] = 1.0
                     target_cls[b, idx_center, label_idx_clamped] = 1.0
                     target_boxes[b, idx_center] = gt_boxes[i]
                     total_positives += 1
+                
                     if label_idx == 0:
                         stem_positives += 1
                     else:
@@ -727,8 +741,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                     img_size=args.img_size,
                     max_detections=100,
                     use_class_thresholds=False,
-                    box_scale=args.box_scale,
-                    apply_nms=False
+                    box_scale=args.box_scale
                 )
 
                 # Debug: check score distribution at low threshold (val only, first batch)
@@ -741,8 +754,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                         img_size=args.img_size,
                         max_detections=100,
                         use_class_thresholds=False,
-                        box_scale=args.box_scale,
-                        apply_nms=False
+                        box_scale=args.box_scale
                     )
                     if len(dbg_scores) > 0:
                         print(f"VAL DEBUG: preds@0.01={len(dbg_scores)} | score_max={dbg_scores.max().item():.4f} | score_mean={dbg_scores.mean().item():.4f}")
@@ -755,15 +767,6 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                 
                 gt_boxes = targets[0]['boxes'].cpu()
                 gt_labels = targets[0]['labels'].cpu()
-
-                if idx == 0 and phase == 'val' and len(boxes) > 0 and len(gt_boxes) > 0:
-                    from torchvision.ops import box_iou
-                    ious_dbg = box_iou(boxes, gt_boxes)
-                    best_iou_per_gt = ious_dbg.max(dim=0).values
-                    print(
-                        f"VAL DEBUG IOU: max={ious_dbg.max().item():.4f} "
-                        f"mean_best_gt={best_iou_per_gt.mean().item():.4f}"
-                    )
                 
                 if len(boxes) == 0:
                     boxes = torch.empty((0, 4))
@@ -1083,7 +1086,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (BALANCED 1e-3 - faster convergence, not too aggressive)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
     parser.add_argument('--model', type=str, default='base', choices=['base', 'strong'], help='Model variant')
-    parser.add_argument('--box_scale', type=float, default=1.0, help='Box scale (anchor scaling factor)')
+    parser.add_argument('--box_scale', type=float, default=1.3, help='Box scale (increase to correct under-sized boxes)')
     parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
     parser.add_argument('--eval_conf_thresh', type=float, default=0.01, help='Eval Confidence Threshold (LOW for mAP/PR computation)')
     parser.add_argument('--iou_thresh', type=float, default=0.35, help='IOU Threshold (LOWERED 0.45→0.35 for maximum NMS suppression)')
@@ -1209,7 +1212,7 @@ def main():
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
-        lambda_box=12.0,      # Box localization (boosted)
+        lambda_box=8.0,       # Box localization (balanced)
         lambda_obj=2.0,       # Objectness (balanced)
         lambda_cls=6.0,       # Classification (BALANCED 8.0→6.0 to prevent gradient conflict)
         class_weights=class_weights_tensor,
