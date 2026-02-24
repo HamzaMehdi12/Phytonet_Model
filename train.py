@@ -389,20 +389,20 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
 
     cls_scores, cls_ids = cls_prob.max(dim=-1)
 
-    # Combined confidence score (sqrt gives balanced contribution)
-    scores = torch.sqrt(obj_prob * cls_scores)
+    # Combined confidence score (stricter: product reduces FP flood)
+    scores = obj_prob * cls_scores
     
     # CRITICAL FIX: Use LOWER confidence threshold for initial filtering
     # This ensures we don't filter out true positives too early
     class_ids = cls_ids.reshape(-1)
     
     if use_class_thresholds:
-        # Class-specific thresholds (SCENARIO A+ - aggressive filtering)
-        # Stems: LOWER threshold (0.08 @ conf=0.35) to allow weak stems, NMS handles noise
-        # Tomatoes: HIGHER threshold (0.49 @ conf=0.35) to suppress tomato FP flood
+        # Class-specific thresholds (precision-focused)
+        # Stems: moderate threshold to avoid FP flood while keeping recall
+        # Tomatoes: stricter threshold to suppress tomato FP flood
         class_thresholds = {
-            0: conf_thresh * 0.23,  # stem - 0.08 @ conf=0.35 (allows weak stems)
-            1: conf_thresh * 1.4,   # tomato - 0.49 @ conf=0.35 (much stricter tomato filtering)
+            0: conf_thresh * 0.35,  # stem - 0.12 @ conf=0.35
+            1: conf_thresh * 1.8,   # tomato - 0.63 @ conf=0.35
         }
         
         # Apply class-specific thresholds
@@ -727,8 +727,8 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                     iou_thresh=args.iou_thresh,
                     anchors=args.anchors,
                     img_size=args.img_size,
-                    max_detections=100,
-                    use_class_thresholds=False
+                    max_detections=50,
+                    use_class_thresholds=True
                 )
                 
                 boxes = boxes.cpu()
@@ -1056,7 +1056,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (BALANCED 1e-3 - faster convergence, not too aggressive)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
     parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
-    parser.add_argument('--iou_thresh', type=float, default=0.45, help='IOU Threshold (LOWERED 0.55→0.45 for stronger NMS suppression)')
+    parser.add_argument('--iou_thresh', type=float, default=0.35, help='IOU Threshold (LOWERED 0.45→0.35 for maximum NMS suppression)')
     parser.add_argument('--output_dir', default='weights', help='Output directory')
     parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
@@ -1074,7 +1074,7 @@ def main():
     print(f"Image Size: {args.img_size}")
     print(f"Epochs: {args.epochs}")
     print(f"Conf Thresh: {args.conf_thresh}")
-    print(f"IOU Thresh: {args.iou_thresh} (STRONG NMS)")
+    print(f"IOU Thresh: {args.iou_thresh} (MAX NMS)")
     print(f"AMP Enabled: {args.amp}")
     print(f"Gradient Accumulation: {args.accumulate}")
     print(f"Effective Batch Size: {args.batch_size * args.accumulate}")
