@@ -769,6 +769,15 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                 
                 gt_boxes = targets[0]['boxes'].cpu()
                 gt_labels = targets[0]['labels'].cpu()
+
+                if idx == 0 and phase == 'val' and len(boxes) > 0 and len(gt_boxes) > 0:
+                    from torchvision.ops import box_iou
+                    ious_dbg = box_iou(boxes, gt_boxes)
+                    best_iou_per_gt = ious_dbg.max(dim=0).values
+                    print(
+                        f"VAL DEBUG IOU: max={ious_dbg.max().item():.4f} "
+                        f"mean_best_gt={best_iou_per_gt.mean().item():.4f}"
+                    )
                 
                 if len(boxes) == 0:
                     boxes = torch.empty((0, 4))
@@ -1088,7 +1097,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (BALANCED 1e-3 - faster convergence, not too aggressive)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
     parser.add_argument('--model', type=str, default='base', choices=['base', 'strong'], help='Model variant')
-    parser.add_argument('--box_scale', type=float, default=1.3, help='Box scale (increase to correct under-sized boxes)')
+    parser.add_argument('--box_scale', type=float, default=1.0, help='Box scale (anchor scaling factor)')
     parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
     parser.add_argument('--eval_conf_thresh', type=float, default=0.01, help='Eval Confidence Threshold (LOW for mAP/PR computation)')
     parser.add_argument('--iou_thresh', type=float, default=0.35, help='IOU Threshold (LOWERED 0.45→0.35 for maximum NMS suppression)')
