@@ -19,7 +19,7 @@ def get_infer_transform(img_size=224):
 
 
 def decode_predictions_advanced(pred, conf_thresh=0.45, iou_thresh=0.45,
-                                anchors=None, img_size=224, max_detections=300):
+                                anchors=None, img_size=224, max_detections=300, box_scale=1.0):
     if anchors is None:
         anchors = [[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
                    [65, 24], [49, 60], [95, 50], [137, 71]]
@@ -69,8 +69,8 @@ def decode_predictions_advanced(pred, conf_thresh=0.45, iou_thresh=0.45,
     tw_clamped = tw.clamp(min=-10.0, max=10.0)
     th_clamped = th.clamp(min=-10.0, max=10.0)
 
-    bw = torch.exp(tw_clamped) * aw * 1.0  # K-means optimized anchors with scale=1.0
-    bh = torch.exp(th_clamped) * ah * 1.0
+    bw = torch.exp(tw_clamped) * aw * box_scale
+    bh = torch.exp(th_clamped) * ah * box_scale
 
     x1 = (cx - bw / 2.0).reshape(-1)
     y1 = (cy - bh / 2.0).reshape(-1)

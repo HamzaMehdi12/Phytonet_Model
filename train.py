@@ -310,7 +310,7 @@ def create_final_summary(model_info, train_loss_history, val_metrics_history, te
 def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
                                 anchors=[[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
                                          [65, 24], [49, 60], [95, 50], [137, 71]],
-                                img_size=224, max_detections=300, use_class_thresholds=True):
+                                img_size=224, max_detections=300, use_class_thresholds=True, box_scale=1.0):
     """Decode network output to normalized boxes [0..1], scores and class ids.
     
     CRITICAL: Model outputs RAW logits (tx, ty, tw, th, to_logit, cls_logits)
@@ -370,10 +370,9 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     tw_clamped = tw.clamp(min=-10.0, max=10.0)
     th_clamped = th.clamp(min=-10.0, max=10.0)
 
-    # CRITICAL: Match scale factor in loss function (1.0 with optimized anchors)
-    # Using anchor-relative sizing with proper scale
-    bw = torch.exp(tw_clamped) * aw * 1.0  # MUST match botanical_loss.py!
-    bh = torch.exp(th_clamped) * ah * 1.0
+    # CRITICAL: Match scale factor in loss function
+    bw = torch.exp(tw_clamped) * aw * box_scale  # MUST match botanical_loss.py!
+    bh = torch.exp(th_clamped) * ah * box_scale
 
     # Convert center + size to corners [x1, y1, x2, y2]
     x1 = (cx - bw / 2.0).reshape(-1)
@@ -727,7 +726,8 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                     anchors=args.anchors,
                     img_size=args.img_size,
                     max_detections=300,
-                    use_class_thresholds=False
+                    use_class_thresholds=False,
+                    box_scale=args.box_scale
                 )
 
                 # Debug: check score distribution at low threshold (val only, first batch)
@@ -739,7 +739,8 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                         anchors=args.anchors,
                         img_size=args.img_size,
                         max_detections=300,
-                        use_class_thresholds=False
+                        use_class_thresholds=False,
+                        box_scale=args.box_scale
                     )
                     if len(dbg_scores) > 0:
                         print(f"VAL DEBUG: preds@0.01={len(dbg_scores)} | score_max={dbg_scores.max().item():.4f} | score_mean={dbg_scores.mean().item():.4f}")
@@ -1070,6 +1071,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (BALANCED 1e-3 - faster convergence, not too aggressive)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
+    parser.add_argument('--box_scale', type=float, default=1.2, help='Box scale (increase to correct under-sized boxes)')
     parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
     parser.add_argument('--eval_conf_thresh', type=float, default=0.01, help='Eval Confidence Threshold (LOW for mAP/PR computation)')
     parser.add_argument('--iou_thresh', type=float, default=0.35, help='IOU Threshold (LOWERED 0.45→0.35 for maximum NMS suppression)')
@@ -1088,6 +1090,7 @@ def main():
     print(f"Learning Rate: {args.lr:.2e} (BALANCED 1e-3)")
     print(f"Batch Size: {args.batch_size}")
     print(f"Image Size: {args.img_size}")
+    print(f"Box Scale: {args.box_scale}")
     print(f"Epochs: {args.epochs}")
     print(f"Conf Thresh: {args.conf_thresh}")
     print(f"Eval Conf Thresh: {args.eval_conf_thresh}")
@@ -1190,20 +1193,20 @@ def main():
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
-        lambda_box=5.0,       # Box localization (keep stable)
-        lambda_obj=3.0,       # Objectness (keep stable)
+        lambda_box=10.0,      # Box localization (BOOST to improve IoU)
+        lambda_obj=2.0,       # Objectness (reduced to focus on boxes)
         lambda_cls=6.0,       # Classification (BALANCED 8.0→6.0 to prevent gradient conflict)
         class_weights=class_weights_tensor,
         num_classes=2,
         anchors=args.anchors,
         img_size=args.img_size,
-        box_scale=1.0
+        box_scale=args.box_scale
     )
     
     print(f"\n{'='*60}")
     print(f"Loss Function Configuration (BALANCED SCENARIO A+):")
-    print(f"  lambda_box: {loss_fn.lambda_box} (box localization)")
-    print(f"  lambda_obj: {loss_fn.lambda_obj} (objectness)")
+    print(f"  lambda_box: {loss_fn.lambda_box} (box localization - BOOSTED)")
+    print(f"  lambda_obj: {loss_fn.lambda_obj} (objectness - reduced)")
     print(f"  lambda_cls: {loss_fn.lambda_cls} (classification - BALANCED at 6.0)")
     print(f"  focal alpha: {loss_fn.alpha}")
     print(f"  focal gamma: {loss_fn.gamma}")
@@ -1292,7 +1295,7 @@ def main():
             
             optimizer.zero_grad()
             
-            scaler = GradScaler(enabled=amp_enabled, init_scale=2.**16)  # 65536
+            scaler = GradScaler(enabled=amp_enabled, init_scale=2.**12)  # 4096 - reduce overflow
 
             for batch_idx, (imgs, targets) in enumerate(train_bar):
                 # Multi-scale training - randomly resize images every 10 batches
@@ -1338,6 +1341,7 @@ def main():
                     
                     # IMPORTANT: Use current_size for anchor normalization during multi-scale training
                     loss_fn.img_size = current_size
+                    loss_fn.box_scale = args.box_scale
 
                     target_dict = prepare_targets_for_loss(
                                     device_targets, 
@@ -1552,7 +1556,8 @@ def main():
                                     conf_thresh=args.eval_conf_thresh,
                                     iou_thresh=args.iou_thresh,
                                     anchors=args.anchors,
-                                    img_size=args.img_size
+                                    img_size=args.img_size,
+                                    box_scale=args.box_scale
                                 )
         
         boxes = boxes.cpu()
@@ -1636,10 +1641,11 @@ def main():
 
                 boxes, scores, class_ids = decode_predictions_advanced(
                     output_tensor,
-                    conf_thresh=args.conf_thresh,
+                    conf_thresh=args.eval_conf_thresh,
                     iou_thresh=args.iou_thresh,
                     anchors=args.anchors,
-                    img_size=args.img_size
+                    img_size=args.img_size,
+                    box_scale=args.box_scale
                 )
                 
                 class_ids = class_ids.cpu().numpy()
