@@ -104,12 +104,12 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             best_anchor = anchor_ious.argmax()
             
             # Class-specific anchor assignment to reduce FP flood
-            if label_idx == 0:  # stem - needs positives but limit over-assignment
+            if label_idx == 0:  # stem - controlled positives
                 top_k = 2
-                iou_thresh = 0.20
-            else:  # tomato - keep strict to cut FP flood
+                iou_thresh = 0.25
+            else:  # tomato - stricter to cut FP flood
                 top_k = 1
-                iou_thresh = 0.30
+                iou_thresh = 0.40
             
             # Get top-k anchors (includes best)
             _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
@@ -401,8 +401,8 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
         # Stems: moderate threshold to avoid FP flood while keeping recall
         # Tomatoes: stricter threshold to suppress tomato FP flood
         class_thresholds = {
-            0: conf_thresh * 0.35,  # stem - 0.12 @ conf=0.35
-            1: conf_thresh * 1.8,   # tomato - 0.63 @ conf=0.35
+            0: conf_thresh * 0.45,  # stem - 0.16 @ conf=0.35
+            1: conf_thresh * 2.0,   # tomato - 0.70 @ conf=0.35
         }
         
         # Apply class-specific thresholds
