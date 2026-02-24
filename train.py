@@ -143,13 +143,6 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
                     else:
                         tomato_positives += 1
     
-    # Diagnostic - show per-class positives
-    if batch_size > 0:
-        avg_pos = total_positives / batch_size
-        avg_stem = stem_positives / batch_size
-        avg_tom = tomato_positives / batch_size
-        print(f"Pos: {avg_pos:.1f}/img (stem={avg_stem:.1f} tom={avg_tom:.1f})", end=" ")
-    
     return {
         'obj': target_obj,
         'cls': target_cls,
@@ -396,14 +389,6 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
 
     obj_prob = torch.sigmoid(to).reshape(-1)
     cls_prob = torch.sigmoid(tcls).reshape(-1, num_classes)
-
-    # [DIAGNOSTIC] Print objectness and class score stats for first batch in validation
-    import inspect
-    stack = inspect.stack()
-    if any('validate_model' in frame.function for frame in stack):
-        print(f"[DIAGNOSTIC] Objectness: max={obj_prob.max().item():.4f}, mean={obj_prob.mean().item():.4f}")
-        print(f"[DIAGNOSTIC] Class prob: max={cls_prob.max().item():.4f}, mean={cls_prob.mean().item():.4f}")
-
     cls_scores, cls_ids = cls_prob.max(dim=-1)
 
     # Combined confidence score (balanced: improves early recall)
@@ -765,11 +750,6 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                     gt_boxes = targets[b]['boxes'].cpu()
                     gt_labels = targets[b]['labels'].cpu()
 
-                    # [DIAGNOSTIC] Print number of predictions and GTs for first 3 images in validation
-                    if idx < 3 and b == 0:
-                        print(f"[DIAGNOSTIC] Image {idx}: {len(boxes)} predictions, {len(gt_boxes)} GTs")
-                    # ...existing code for metrics, confusion matrix, etc...
-                
                 if len(boxes) == 0:
                     boxes = torch.empty((0, 4))
                     scores = torch.empty((0,))
@@ -1044,17 +1024,6 @@ def create_optimizer_and_scheduler(model, args):
         betas=(0.9, 0.999),
         eps=1e-8
     )
-
-    # [DIAGNOSTIC] Print which parameters have requires_grad=False
-    print("\n[DIAGNOSTIC] Model parameters with requires_grad=False:")
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            print(f"  {name} (shape={tuple(param.shape)})")
-    print("[DIAGNOSTIC] Model parameters being optimized:")
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(f"  {name} (shape={tuple(param.shape)})")
-    
     # Cosine annealing with warm restarts
     # FIXED: Use longer cycle and higher eta_min to prevent premature LR decay
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -1156,39 +1125,6 @@ def main():
     )
     val_ds = BotanicalDataset(args.val_dir, img_size=args.img_size, mode='val')
     test_ds = BotanicalDataset(args.test_dir, img_size=args.img_size, mode='test')
-
-    print("\n[DIAGNOSTIC] Dataset sizes:")
-    print(f"  Train: {len(train_ds)} images")
-    print(f"  Val:   {len(val_ds)} images")
-    print(f"  Test:  {len(test_ds)} images")
-
-    print("\n[DIAGNOSTIC] Checking dataset labels...")
-    all_labels = []
-    for i in range(min(100, len(train_ds))):
-        _, target = train_ds[i]
-        all_labels.extend(target['labels'].tolist())
-    unique_labels = set(all_labels)
-    print(f"  Unique labels in first 100 train samples: {sorted(unique_labels)}")
-    if unique_labels != {0, 1}:
-        print("✗ CRITICAL ERROR: Labels must be [0, 1]!")
-        print(f"Your labels are: {sorted(unique_labels)}")
-        exit()
-
-    print("\n[DIAGNOSTIC] Printing 3 sample targets from train set:")
-    for i in range(min(3, len(train_ds))):
-        _, target = train_ds[i]
-        print(f"Sample {i}: boxes={target['boxes']}, labels={target['labels']}")
-
-    print("\n[DIAGNOSTIC] Visualizing first batch from train and val set...")
-    from pathlib import Path
-    train_loader_diag = DataLoader(train_ds, batch_size=1, shuffle=False, collate_fn=collate_fn)
-    val_loader_diag = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_fn)
-    train_imgs, train_targets = next(iter(train_loader_diag))
-    val_imgs, val_targets = next(iter(val_loader_diag))
-    Path("diagnostics").mkdir(exist_ok=True)
-    save_detection_image(train_imgs[0], train_targets[0], ([], [], []), "diagnostics/train_sample.jpg", {0: "stem", 1: "tomato"}, img_size=args.img_size)
-    save_detection_image(val_imgs[0], val_targets[0], ([], [], []), "diagnostics/val_sample.jpg", {0: "stem", 1: "tomato"}, img_size=args.img_size)
-    print("  Saved diagnostics/train_sample.jpg and diagnostics/val_sample.jpg (no predictions, just GT boxes)")
 
     class_weights = calculate_class_weights(train_ds).to(device)
 
@@ -1376,13 +1312,6 @@ def main():
                         'image_path': target.get('image_path', '')
                     }
                     device_targets.append(device_target)
-
-
-                # [DIAGNOSTIC] Print last layer weights before forward
-                if last_layer_name:
-                    last_param = dict(model.named_parameters())[last_layer_name]
-                    print(f"[DIAGNOSTIC] Last layer ({last_layer_name}) weights: mean={last_param.data.mean().item():.6f}, std={last_param.data.std().item():.6f}")
-
                 with autocast(enabled=amp_enabled):
                     outputs = model(imgs)
                     pred_dict = prepare_predictions_for_loss(outputs, num_classes=2)
@@ -1453,17 +1382,7 @@ def main():
                     scaler.scale(scaled_loss).backward()
                 else:
                     scaled_loss.backward()
-
-                # [DIAGNOSTIC] Print last layer gradients after backward
-                if last_layer_name:
-                    last_param = dict(model.named_parameters())[last_layer_name]
-                    if last_param.grad is not None:
-                        print(f"[DIAGNOSTIC] Last layer ({last_layer_name}) grad: mean={last_param.grad.mean().item():.6f}, std={last_param.grad.std().item():.6f}")
-
-                # [DIAGNOSTIC] Print loss components for first few batches
-                if batch_idx < 3:
-                    print(f"[DIAGNOSTIC][Batch {batch_idx}] loss={loss.item():.4f}, cls_loss={cls_loss.item():.4f}, obj_loss={obj_loss.item():.4f}, box_loss={box_loss.item():.4f}")
-
+                    
                 epoch_loss += loss.item()
                 epoch_obj += obj_loss.item()
                 epoch_cls += cls_loss.item()
@@ -1497,12 +1416,7 @@ def main():
                         if amp_enabled:
                             scaler.update()
                         continue
-
-                    # [DIAGNOSTIC] Print last layer weights after optimizer step
-                    if last_layer_name:
-                        last_param = dict(model.named_parameters())[last_layer_name]
-                        print(f"[DIAGNOSTIC] Last layer ({last_layer_name}) weights after step: mean={last_param.data.mean().item():.6f}, std={last_param.data.std().item():.6f}")
-
+                        
                     if amp_enabled:
                         scaler.step(optimizer)
                         scaler.update()
