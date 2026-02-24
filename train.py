@@ -314,7 +314,7 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
     """Decode network output to normalized boxes [0..1], scores and class ids.
     
     CRITICAL: Model outputs RAW logits (tx, ty, tw, th, to_logit, cls_logits)
-    We must apply sigmoid to tx, ty, to and softmax to cls
+    We must apply sigmoid to tx, ty, to and sigmoid to cls (BCE loss)
     """
     device = pred.device
     anchors = torch.tensor(anchors, dtype=torch.float32, device=device)
@@ -727,7 +727,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                     anchors=args.anchors,
                     img_size=args.img_size,
                     max_detections=300,
-                    use_class_thresholds=True
+                    use_class_thresholds=False
                 )
                 
                 boxes = boxes.cpu()
@@ -1598,9 +1598,28 @@ def main():
                 imgs = imgs.to(device)
                 outputs = model(imgs)
                 
+                # Reuse output handling logic to avoid tensor mismatch
+                if isinstance(outputs, dict):
+                    if 'large' in outputs:
+                        output_tensor = outputs['large']
+                    elif 'pred_boxes' in outputs:
+                        output_tensor = convert_dict_to_tensor(outputs, num_classes=2, H=7, W=7)
+                    else:
+                        print(f"Unexpected dict keys: {outputs.keys()}")
+                        continue
+                elif isinstance(outputs, torch.Tensor):
+                    output_tensor = outputs
+                else:
+                    print(f"Unexpected model output type: {type(outputs)}")
+                    continue
+
+                if output_tensor.dim() == 4:
+                    output_tensor = output_tensor[0]
+
                 boxes, scores, class_ids = decode_predictions_advanced(
-                    outputs[0], 
+                    output_tensor,
                     conf_thresh=args.conf_thresh,
+                    iou_thresh=args.iou_thresh,
                     anchors=args.anchors,
                     img_size=args.img_size
                 )

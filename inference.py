@@ -21,8 +21,8 @@ def get_infer_transform(img_size=224):
 def decode_predictions_advanced(pred, conf_thresh=0.45, iou_thresh=0.45,
                                 anchors=None, img_size=224, max_detections=300):
     if anchors is None:
-        anchors = [[10, 12], [16, 18], [24, 28], [32, 36], [48, 52],
-                   [64, 68], [80, 84], [96, 100], [112, 116]]
+        anchors = [[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
+                   [65, 24], [49, 60], [95, 50], [137, 71]]
 
     device = pred.device
     anchors = torch.tensor(anchors, dtype=torch.float32, device=device)
@@ -80,9 +80,9 @@ def decode_predictions_advanced(pred, conf_thresh=0.45, iou_thresh=0.45,
     boxes = torch.stack([x1, y1, x2, y2], dim=-1).clamp(0, 1)
 
     obj_prob = torch.sigmoid(to).reshape(-1)
-    cls_prob = torch.softmax(tcls, dim=-1).reshape(-1, num_classes)
+    cls_prob = torch.sigmoid(tcls).reshape(-1, num_classes)
     cls_scores, cls_ids = cls_prob.max(dim=-1)
-    scores = torch.sqrt(obj_prob * cls_scores)
+    scores = obj_prob * cls_scores
 
     keep_mask = scores > conf_thresh
     if keep_mask.sum() == 0:
