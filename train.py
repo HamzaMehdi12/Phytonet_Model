@@ -699,7 +699,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
         # Use a uniform IoU threshold for mAP@50
         map_metric = MeanAveragePrecision(
             class_metrics=True,
-            iou_thresholds=0.5
+            iou_thresholds=[0.5]
         )
         
         with torch.no_grad():
@@ -1373,10 +1373,9 @@ def main():
                 
                 if amp_enabled:
                     scaler.scale(scaled_loss).backward()
-                    scaler.unscale_(optimizer)
                 else:
                     scaled_loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+                # Only unscale and clip before optimizer step, not every backward
 
                 epoch_loss += loss.item()
                 epoch_obj += obj_loss.item()
