@@ -1331,6 +1331,10 @@ def main():
             train_bar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")
             optimizer.zero_grad()
 
+            last_layer_name = None
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    last_layer_name = name
             for batch_idx, (imgs, targets) in enumerate(train_bar):
                 # Multi-scale training - randomly resize images every 10 batches
                 if batch_idx % 10 == 0:
@@ -1356,6 +1360,12 @@ def main():
                         'image_path': target.get('image_path', '')
                     }
                     device_targets.append(device_target)
+
+
+                # [DIAGNOSTIC] Print last layer weights before forward
+                if last_layer_name:
+                    last_param = dict(model.named_parameters())[last_layer_name]
+                    print(f"[DIAGNOSTIC] Last layer ({last_layer_name}) weights: mean={last_param.data.mean().item():.6f}, std={last_param.data.std().item():.6f}")
 
                 with autocast(enabled=amp_enabled):
                     outputs = model(imgs)
@@ -1393,10 +1403,17 @@ def main():
 
                 scaled_loss = loss / args.accumulate
 
+
                 if amp_enabled:
                     scaler.scale(scaled_loss).backward()
                 else:
                     scaled_loss.backward()
+
+                # [DIAGNOSTIC] Print last layer gradients after backward
+                if last_layer_name:
+                    last_param = dict(model.named_parameters())[last_layer_name]
+                    if last_param.grad is not None:
+                        print(f"[DIAGNOSTIC] Last layer ({last_layer_name}) grad: mean={last_param.grad.mean().item():.6f}, std={last_param.grad.std().item():.6f}")
 
                 # [DIAGNOSTIC] Print loss components for first few batches
                 if batch_idx < 3:
@@ -1435,6 +1452,11 @@ def main():
                         if amp_enabled:
                             scaler.update()
                         continue
+
+                    # [DIAGNOSTIC] Print last layer weights after optimizer step
+                    if last_layer_name:
+                        last_param = dict(model.named_parameters())[last_layer_name]
+                        print(f"[DIAGNOSTIC] Last layer ({last_layer_name}) weights after step: mean={last_param.data.mean().item():.6f}, std={last_param.data.std().item():.6f}")
 
                     if amp_enabled:
                         scaler.step(optimizer)
