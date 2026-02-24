@@ -99,17 +99,17 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             label_idx = int(label.item())
             best_anchor = anchor_ious.argmax()
             # Unified stricter IoU threshold for both classes
-            iou_thresh = 0.30
-            # All anchors above threshold
+            iou_thresh = 0.40
+            # Only anchors above threshold
             matching_anchors = (anchor_ious > iou_thresh).nonzero(as_tuple=False).flatten()
-            # Fallback: assign best anchor if IoU > 0.20
-            if matching_anchors.numel() == 0 and anchor_ious[best_anchor] > 0.20:
+            # Fallback: assign best anchor if IoU > 0.30
+            if matching_anchors.numel() == 0 and anchor_ious[best_anchor] > 0.30:
                 matching_anchors = torch.tensor([best_anchor], device=device)
             elif matching_anchors.numel() == 0:
                 continue
-            # Limit number of positives per GT to 5
-            if matching_anchors.numel() > 5:
-                topk = torch.topk(anchor_ious[matching_anchors], 5)
+            # Limit number of positives per GT to 3
+            if matching_anchors.numel() > 3:
+                topk = torch.topk(anchor_ious[matching_anchors], 3)
                 matching_anchors = matching_anchors[topk.indices]
             spatial_cells = [(int(gy), int(gx))]
             for anchor_idx in matching_anchors:
