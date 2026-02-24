@@ -82,7 +82,7 @@ def decode_predictions_advanced(pred, conf_thresh=0.45, iou_thresh=0.45,
     obj_prob = torch.sigmoid(to).reshape(-1)
     cls_prob = torch.sigmoid(tcls).reshape(-1, num_classes)
     cls_scores, cls_ids = cls_prob.max(dim=-1)
-    scores = obj_prob * cls_scores
+    scores = torch.sqrt(obj_prob * cls_scores)
 
     keep_mask = scores > conf_thresh
     if keep_mask.sum() == 0:

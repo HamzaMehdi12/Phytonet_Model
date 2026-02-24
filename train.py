@@ -389,8 +389,8 @@ def decode_predictions_advanced(pred, conf_thresh=0.35, iou_thresh=0.45,
 
     cls_scores, cls_ids = cls_prob.max(dim=-1)
 
-    # Combined confidence score (stricter: reduce FP flood)
-    scores = obj_prob * cls_scores
+    # Combined confidence score (balanced: improves early recall)
+    scores = torch.sqrt(obj_prob * cls_scores)
     
     # CRITICAL FIX: Use LOWER confidence threshold for initial filtering
     # This ensures we don't filter out true positives too early
@@ -722,13 +722,29 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                 # Decode predictions
                 boxes, scores, class_ids = decode_predictions_advanced(
                     output_tensor, 
-                    conf_thresh=0.35,
+                    conf_thresh=args.eval_conf_thresh,
                     iou_thresh=args.iou_thresh,
                     anchors=args.anchors,
                     img_size=args.img_size,
                     max_detections=300,
                     use_class_thresholds=False
                 )
+
+                # Debug: check score distribution at low threshold (val only, first batch)
+                if idx == 0 and phase == 'val':
+                    dbg_boxes, dbg_scores, _ = decode_predictions_advanced(
+                        output_tensor,
+                        conf_thresh=0.01,
+                        iou_thresh=args.iou_thresh,
+                        anchors=args.anchors,
+                        img_size=args.img_size,
+                        max_detections=300,
+                        use_class_thresholds=False
+                    )
+                    if len(dbg_scores) > 0:
+                        print(f"VAL DEBUG: preds@0.01={len(dbg_scores)} | score_max={dbg_scores.max().item():.4f} | score_mean={dbg_scores.mean().item():.4f}")
+                    else:
+                        print("VAL DEBUG: 0 preds even at conf_thresh=0.01")
                 
                 boxes = boxes.cpu()
                 scores = scores.cpu()
@@ -804,7 +820,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                         (boxes, scores, class_ids),
                         os.path.join(args.output_dir, 'detections', phase, f'epoch_{epoch}.jpg'),
                         class_names,
-                        conf_thresh=args.conf_thresh,
+                        conf_thresh=args.eval_conf_thresh,
                         img_size=args.img_size
                     )
         
@@ -1055,6 +1071,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (BALANCED 1e-3 - faster convergence, not too aggressive)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
     parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
+    parser.add_argument('--eval_conf_thresh', type=float, default=0.01, help='Eval Confidence Threshold (LOW for mAP/PR computation)')
     parser.add_argument('--iou_thresh', type=float, default=0.35, help='IOU Threshold (LOWERED 0.45→0.35 for maximum NMS suppression)')
     parser.add_argument('--output_dir', default='weights', help='Output directory')
     parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
@@ -1073,6 +1090,7 @@ def main():
     print(f"Image Size: {args.img_size}")
     print(f"Epochs: {args.epochs}")
     print(f"Conf Thresh: {args.conf_thresh}")
+    print(f"Eval Conf Thresh: {args.eval_conf_thresh}")
     print(f"IOU Thresh: {args.iou_thresh} (MAX NMS)")
     print(f"AMP Enabled: {args.amp}")
     print(f"Gradient Accumulation: {args.accumulate}")
@@ -1531,7 +1549,7 @@ def main():
         
         boxes, scores, class_ids = decode_predictions_advanced(
                                     output_tensor,  # Use the processed tensor, NOT outputs[0]
-                                    conf_thresh=args.conf_thresh,
+                                    conf_thresh=args.eval_conf_thresh,
                                     iou_thresh=args.iou_thresh,
                                     anchors=args.anchors,
                                     img_size=args.img_size
@@ -1551,7 +1569,7 @@ def main():
             (boxes, scores, class_ids),
             os.path.join(args.output_dir, 'detections', 'test', f'test_result.jpg'),
             class_names,
-            conf_thresh=args.conf_thresh,
+            conf_thresh=args.eval_conf_thresh,
             img_size=args.img_size
         )
     except Exception as e:
