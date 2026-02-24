@@ -682,8 +682,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
         from torchmetrics.detection import MeanAveragePrecision
         map_metric = MeanAveragePrecision(
             class_metrics=True,
-            max_detection_thresholds=[100],
-            warn_on_many_detections=False
+            max_detection_thresholds=[100]
         )
         
         with torch.no_grad():
