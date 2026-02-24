@@ -23,7 +23,7 @@ from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.cuda.amp import GradScaler, autocast
 from torchvision.ops import nms
-from phytonet import HighAccuracyPhytoSparseNet
+from phytonet import HighAccuracyPhytoSparseNet, HighAccuracyPhytoSparseNetStrong
 from botanical_loss import DetectionLoss
 from dataset import BotanicalDataset
 from torchmetrics.detection import MeanAveragePrecision
@@ -1071,6 +1071,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (BALANCED 1e-3 - faster convergence, not too aggressive)')
     parser.add_argument('--img_size', type=int, default=224, help='Image Size')
+    parser.add_argument('--model', type=str, default='base', choices=['base', 'strong'], help='Model variant')
     parser.add_argument('--box_scale', type=float, default=1.2, help='Box scale (increase to correct under-sized boxes)')
     parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
     parser.add_argument('--eval_conf_thresh', type=float, default=0.01, help='Eval Confidence Threshold (LOW for mAP/PR computation)')
@@ -1090,6 +1091,7 @@ def main():
     print(f"Learning Rate: {args.lr:.2e} (BALANCED 1e-3)")
     print(f"Batch Size: {args.batch_size}")
     print(f"Image Size: {args.img_size}")
+    print(f"Model Variant: {args.model}")
     print(f"Box Scale: {args.box_scale}")
     print(f"Epochs: {args.epochs}")
     print(f"Conf Thresh: {args.conf_thresh}")
@@ -1170,7 +1172,10 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=2)
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=2)
 
-    model = HighAccuracyPhytoSparseNet(num_classes=2).to(device)
+    if args.model == 'strong':
+        model = HighAccuracyPhytoSparseNetStrong(num_classes=2).to(device)
+    else:
+        model = HighAccuracyPhytoSparseNet(num_classes=2).to(device)
     model_info = log_model_info(model, args.img_size, device, args.output_dir)
 
     # Test forward pass

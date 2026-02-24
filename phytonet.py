@@ -262,6 +262,20 @@ class HighAccuracyPhytoSparseNet(nn.Module):
         return output_medium
 
 
+class HighAccuracyPhytoSparseNetStrong(HighAccuracyPhytoSparseNet):
+    """
+    Stronger variant of PhytoSparseNet with increased width/depth.
+    Same structure, higher capacity for better accuracy.
+    """
+    def __init__(self, num_classes=2, num_anchors=9):
+        super().__init__(
+            num_classes=num_classes,
+            num_anchors=num_anchors,
+            width_mult=1.0,
+            depth_mult=1.0
+        )
+
+
 class HighAccuracyPhytoSparseNetDict(nn.Module):
     """
     Same YOLOv11-inspired architecture but returns predictions in dict format.

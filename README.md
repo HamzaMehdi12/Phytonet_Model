@@ -172,6 +172,12 @@ With balanced settings and exponential warmup, expected metrics are:
 9. **Class-specific confidence thresholds** - Optimized per-class filtering
 10. **Exponential warmup** - Smooth early-epoch training (NEW in Phase 5)
 
+### Model Variants
+| Variant | Description | When to Use |
+|---------|-------------|-------------|
+| **base** | Edge-optimized (default) | Fast training, lower compute |
+| **strong** | Higher capacity (width=1.0, depth=1.0) | Best accuracy, more compute |
+
 ---
 
 ## 📋 Table of Contents
@@ -204,6 +210,9 @@ With balanced settings and exponential warmup, expected metrics are:
 ```bash
 cd /Users/spectee/Desktop/Phytonet_Model/Phytonet_Model
 python3 train.py --epochs 300 --batch_size 16 --lr 1e-3 --output_dir ghost_bifpn_weights
+
+# Stronger model (higher accuracy, more compute)
+python3 train.py --model strong --epochs 300 --batch_size 16 --lr 1e-3 --output_dir ghost_bifpn_weights
 ```
 
 ### Resume from Checkpoint
