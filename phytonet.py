@@ -224,42 +224,26 @@ class HighAccuracyPhytoSparseNet(nn.Module):
         """
         Args:
             x: Input tensor [B, 3, H, W]
-        
         Returns:
-            Output tensor [B, A*(5+C), 14, 14] (using medium head for small objects)
-            
-            The output is organized as:
-            [B, A*(5+C), H, W] where for each anchor:
-            - channels 0-3: bbox offsets (tx, ty, tw, th) - RAW LOGITS
-            - channel 4: objectness logit - RAW
-            - channels 5-(5+C-1): class logits - RAW
-            
-            Loss function will apply sigmoid/exp/softmax as needed
+            Dict with both head outputs: { 'medium': [B, C, 14, 14], 'large': [B, C, 7, 7] }
         """
         # Backbone
-        x = self.stem(x)           # [B, c1, 112, 112]
-        s1 = self.stage1(x)        # [B, c2, 56, 56]
-        s2 = self.stage2(s1)       # [B, c3, 28, 28]
-        s3 = self.stage3(s2)       # [B, c4, 14, 14]
-        s4 = self.stage4(s3)       # [B, c5, 7, 7]
-        
+        x = self.stem(x)
+        s1 = self.stage1(x)
+        s2 = self.stage2(s1)
+        s3 = self.stage3(s2)
+        s4 = self.stage4(s3)
         # Neck - FPN style
-        # Upsample and fuse
-        p4 = self.up1(s4)                                    # [B, c5, 14, 14]
-        p4 = torch.cat([p4, self.lateral1(s3)], dim=1)      # [B, c5*2, 14, 14]
-        p4 = self.c2f_up1(p4)                                # [B, c4, 14, 14]
-        
-        # Downsample and fuse
-        p5 = self.down1(p4)                                  # [B, c4, 7, 7]
-        p5 = torch.cat([p5, s4], dim=1)                      # [B, c4+c5, 7, 7]
-        p5 = self.c2f_down1(p5)                              # [B, c5, 7, 7]
-        
-        # Detection heads - outputs RAW logits
-        # Loss function handles sigmoid/activations internally
-        output_medium = self.head_medium(p4)  # [B, 63, 14, 14]
-        
-        # Return medium head tensor for better small-object localization
-        return output_medium
+        p4 = self.up1(s4)
+        p4 = torch.cat([p4, self.lateral1(s3)], dim=1)
+        p4 = self.c2f_up1(p4)
+        p5 = self.down1(p4)
+        p5 = torch.cat([p5, s4], dim=1)
+        p5 = self.c2f_down1(p5)
+        # Detection heads
+        output_medium = self.head_medium(p4)  # [B, C, 14, 14]
+        output_large = self.head_large(p5)    # [B, C, 7, 7]
+        return { 'medium': output_medium, 'large': output_large }
 
 
 class HighAccuracyPhytoSparseNetStrong(HighAccuracyPhytoSparseNet):

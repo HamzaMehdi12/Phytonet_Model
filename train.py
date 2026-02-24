@@ -170,12 +170,18 @@ def prepare_predictions_for_loss(model_output, num_classes=2):
         required_keys = {'pred_boxes', 'pred_cls', 'pred_obj'}
         if required_keys.issubset(model_output.keys()):
             return model_output
-        
-        # Case 2: Multi-scale output dict
+        # Case 2: Multi-scale output dict (both heads)
+        if 'large' in model_output and 'medium' in model_output:
+            # Return dict of both heads
+            return {
+                'large': prepare_predictions_for_loss(model_output['large'], num_classes),
+                'medium': prepare_predictions_for_loss(model_output['medium'], num_classes)
+            }
+        # If only one head present, fallback to tensor logic below
         if 'large' in model_output:
-            # Use only the 'large' head output
             model_output = model_output['large']
-            # Now it's a tensor, continue to Case 3
+        elif 'medium' in model_output:
+            model_output = model_output['medium']
         else:
             raise TypeError(f"Dict with unexpected keys: {model_output.keys()}")
     
@@ -1380,31 +1386,60 @@ def main():
                 with autocast(enabled=amp_enabled):
                     outputs = model(imgs)
                     pred_dict = prepare_predictions_for_loss(outputs, num_classes=2)
-                    if isinstance(outputs, dict):
-                        batch_size = pred_dict['pred_boxes'].shape[0]
-                        num_cells = pred_dict['pred_boxes'].shape[1]
-                        num_anchors = len(args.anchors)
-                        num_classes = 2
-                        if num_cells % num_anchors != 0:
-                            raise ValueError(f"num_cells ({num_cells}) not divisible by num_anchors ({num_anchors})")
-                        HW = num_cells // num_anchors
-                        H = W = int(HW ** 0.5)
-                        output_shape = (batch_size, num_anchors * (5 + num_classes), H, W)
+                    # If both heads present, compute and sum losses for both
+                    if isinstance(pred_dict, dict) and 'large' in pred_dict and 'medium' in pred_dict:
+                        # Prepare targets for both heads
+                        # Large head: 7x7 grid
+                        output_shape_large = outputs['large'].shape
+                        target_dict_large = prepare_targets_for_loss(
+                            device_targets,
+                            output_shape_large,
+                            img_size=current_size,
+                            anchors=args.anchors,
+                            num_classes=2
+                        )
+                        # Medium head: 14x14 grid
+                        output_shape_medium = outputs['medium'].shape
+                        target_dict_medium = prepare_targets_for_loss(
+                            device_targets,
+                            output_shape_medium,
+                            img_size=current_size,
+                            anchors=args.anchors,
+                            num_classes=2
+                        )
+                        loss_fn.img_size = current_size
+                        loss_fn.box_scale = args.box_scale
+                        loss_large, cls_loss_large, obj_loss_large, box_loss_large = loss_fn(pred_dict['large'], target_dict_large)
+                        loss_medium, cls_loss_medium, obj_loss_medium, box_loss_medium = loss_fn(pred_dict['medium'], target_dict_medium)
+                        # Sum losses
+                        loss = loss_large + loss_medium
+                        cls_loss = cls_loss_large + cls_loss_medium
+                        obj_loss = obj_loss_large + obj_loss_medium
+                        box_loss = box_loss_large + box_loss_medium
                     else:
-                        output_shape = outputs.shape
-
-                    loss_fn.img_size = current_size
-                    loss_fn.box_scale = args.box_scale
-
-                    target_dict = prepare_targets_for_loss(
-                        device_targets,
-                        output_shape,
-                        img_size=current_size,
-                        anchors=args.anchors,
-                        num_classes=2
-                    )
-
-                    loss, cls_loss, obj_loss, box_loss = loss_fn(pred_dict, target_dict)
+                        # Single head fallback
+                        if isinstance(outputs, dict):
+                            batch_size = pred_dict['pred_boxes'].shape[0]
+                            num_cells = pred_dict['pred_boxes'].shape[1]
+                            num_anchors = len(args.anchors)
+                            num_classes = 2
+                            if num_cells % num_anchors != 0:
+                                raise ValueError(f"num_cells ({num_cells}) not divisible by num_anchors ({num_anchors})")
+                            HW = num_cells // num_anchors
+                            H = W = int(HW ** 0.5)
+                            output_shape = (batch_size, num_anchors * (5 + num_classes), H, W)
+                        else:
+                            output_shape = outputs.shape
+                        loss_fn.img_size = current_size
+                        loss_fn.box_scale = args.box_scale
+                        target_dict = prepare_targets_for_loss(
+                            device_targets,
+                            output_shape,
+                            img_size=current_size,
+                            anchors=args.anchors,
+                            num_classes=2
+                        )
+                        loss, cls_loss, obj_loss, box_loss = loss_fn(pred_dict, target_dict)
 
                 if torch.isnan(loss).any() or torch.isinf(loss).any():
                     print(f"Invalid loss detected in batch {batch_idx}, skipping")
