@@ -66,6 +66,7 @@ Learning Rate:        1e-3 (balanced: faster than 8e-4, less aggressive than 1.2
 Batch Size:           16 (effective 32 with gradient accumulation)
 Accumulation Steps:   2
 Image Size:           224×224
+Box Scale:            1.2 (improves localization of small objects)
 Epochs:               300 (with early stopping patience: 20)
 
 Warmup:               3 epochs EXPONENTIAL (NOT LINEAR)
@@ -75,12 +76,13 @@ Warmup:               3 epochs EXPONENTIAL (NOT LINEAR)
 
 Scheduler:            CosineAnnealingLR (T_max=100, eta_min=0.2×base_lr)
 Gradient Clipping:    max_norm=0.5
+Eval Conf Thresh:     0.01 (used only for mAP/PR evaluation)
 ```
 
 ### Loss Function Configuration
 ```yaml
-lambda_box:           5.0   (box localization - stable)
-lambda_obj:           3.0   (objectness - stable)
+lambda_box:           10.0  (box localization - BOOSTED)
+lambda_obj:           2.0   (objectness - reduced)
 lambda_cls:           6.0   (classification - BALANCED from 8.0)
 
 Class Weights:        [6.0, 1.0]  (stem 6x, tomato 1x)
@@ -88,18 +90,18 @@ Focal Loss Alpha:     0.25
 Focal Loss Gamma:     2.0
 
 Confidence Thresholds (at conf_thresh=0.35):
-  Stem:               0.08  (multiplier 0.23)
-  Tomato:             0.49  (multiplier 1.4)
+  Stem:               0.09  (multiplier 0.25)
+  Tomato:             0.42  (multiplier 1.2)
 
-NMS IOU Threshold:    0.55  (aggressive overlap suppression)
+NMS IOU Threshold:    0.35  (max suppression)
 ```
 
 ### Target Assignment Strategy
 ```yaml
-Stem Top-K:           3  (allow more positive samples for learning)
+Stem Top-K:           2  (controlled positives)
 Tomato Top-K:         1  (reduce false positive assignments)
-IoU Threshold (stem): 0.3 (lower to get more positives for small class)
-IoU Threshold (tomato): 0.5 (standard matching)
+IoU Threshold (stem): 0.25
+IoU Threshold (tomato): 0.40
 ```
 
 ---
@@ -115,6 +117,10 @@ With balanced settings and exponential warmup, expected metrics are:
 | 20-30 | 2.0 → 1.7 | 0.15-0.25 | Metrics improving steadily |
 | 40-50 | 1.6 → 1.4 | 0.25-0.40 | Steady convergence |
 | 100+ | 0.8-1.2 | 0.60-0.80 | Target achieved ✅ |
+
+### Latest Early Metrics (Strong Variant)
+- **Epoch 11:** mAP@50 ≈ 0.0023, Precision ≈ 0.0052, Recall ≈ 0.83
+- Early precision is low due to FP flood; ongoing fixes focus on reducing false positives
 
 **Key Difference from Previous Phase**: Loss should NOT plateau anymore. If loss still stuck at 2.6-2.8 by epoch 10, report immediately for additional interventions.
 
@@ -171,12 +177,18 @@ With balanced settings and exponential warmup, expected metrics are:
 8. **Gradient stabilization** - Prevents training collapse
 9. **Class-specific confidence thresholds** - Optimized per-class filtering
 10. **Exponential warmup** - Smooth early-epoch training (NEW in Phase 5)
+11. **14×14 detection head** - Better small-object localization
 
 ### Model Variants
 | Variant | Description | When to Use |
 |---------|-------------|-------------|
 | **base** | Edge-optimized (default) | Fast training, lower compute |
 | **strong** | Higher capacity (width=1.0, depth=1.0) | Best accuracy, more compute |
+
+#### Strong Variant Notes
+- Larger capacity, higher VRAM usage
+- Recommended when mAP is low with base model
+- Command: `python3 train.py --model strong ...`
 
 ---
 

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 class DetectionLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0, lambda_box=2.0, lambda_cls=4.0, 
                  lambda_obj=2.0, class_weights=None, num_classes=2,
-                 anchors=None, img_size=224, box_scale=1.0, label_smoothing=0.05):
+                 anchors=None, img_size=224, box_scale=1.0, label_smoothing=0.0):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -200,7 +200,7 @@ class DetectionLoss(nn.Module):
         num_total = target_obj.numel()
         num_pos_obj = target_obj.sum().clamp(min=1)
         num_neg_obj = num_total - num_pos_obj
-        pos_weight = (num_neg_obj / num_pos_obj).clamp(max=10.0)  # Cap at 10 to avoid FP flood
+        pos_weight = (num_neg_obj / num_pos_obj).clamp(max=5.0)  # Cap at 5 to avoid FP flood
 
         obj_loss = F.binary_cross_entropy_with_logits(
             pred_obj, 
@@ -239,7 +239,7 @@ class DetectionLoss(nn.Module):
             l1_loss = F.l1_loss(pos_pred_boxes, pos_target_boxes)
             
             # Combine with more weight on GIoU for better localization
-            box_loss = 0.5 * giou_loss + 0.5 * l1_loss
+            box_loss = 0.7 * giou_loss + 0.3 * l1_loss
         else:
             box_loss = torch.tensor(0.0, device=device)
         
