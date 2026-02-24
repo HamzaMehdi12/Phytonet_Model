@@ -103,23 +103,25 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             # Best anchor is ALWAYS assigned regardless of IoU
             best_anchor = anchor_ious.argmax()
             
-            # Class-specific anchor assignment to reduce FP flood
-            if label_idx == 0:  # stem - controlled positives
+            # Class-specific anchor assignment to improve localization
+            if label_idx == 0:  # stem
                 top_k = 2
-                iou_thresh = 0.25
-            else:  # tomato - stricter to cut FP flood
+                iou_thresh = 0.35
+            else:  # tomato
                 top_k = 1
-                iou_thresh = 0.40
+                iou_thresh = 0.50
             
             # Get top-k anchors (includes best)
             _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
             
             # Use top-k anchors that pass IoU threshold
             matching_anchors = [a for a in top_anchors if anchor_ious[a] >= iou_thresh]
-            
-            # Always include best anchor even if it fails threshold
-            if best_anchor not in matching_anchors:
-                matching_anchors = list(matching_anchors) + [best_anchor]
+
+            # If nothing matches, only keep best anchor if it's not too bad
+            if len(matching_anchors) == 0 and anchor_ious[best_anchor] >= 0.20:
+                matching_anchors = [best_anchor]
+            elif len(matching_anchors) == 0:
+                continue
             
             # NO SPATIAL NEIGHBORS - assign only to center cell
             spatial_cells = [(int(gy), int(gx))]  # Center cell ONLY
@@ -1223,7 +1225,7 @@ def main():
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
-        lambda_box=8.0,       # Box localization (balanced)
+        lambda_box=10.0,      # Box localization (boosted)
         lambda_obj=2.0,       # Objectness (balanced)
         lambda_cls=6.0,       # Classification (BALANCED 8.0→6.0 to prevent gradient conflict)
         class_weights=class_weights_tensor,
