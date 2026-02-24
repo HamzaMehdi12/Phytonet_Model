@@ -1038,6 +1038,16 @@ def create_optimizer_and_scheduler(model, args):
         betas=(0.9, 0.999),
         eps=1e-8
     )
+
+    # [DIAGNOSTIC] Print which parameters have requires_grad=False
+    print("\n[DIAGNOSTIC] Model parameters with requires_grad=False:")
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            print(f"  {name} (shape={tuple(param.shape)})")
+    print("[DIAGNOSTIC] Model parameters being optimized:")
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"  {name} (shape={tuple(param.shape)})")
     
     # Cosine annealing with warm restarts
     # FIXED: Use longer cycle and higher eta_min to prevent premature LR decay
