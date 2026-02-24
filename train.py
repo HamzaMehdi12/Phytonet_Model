@@ -741,7 +741,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                         iou_thresh=args.iou_thresh,
                         anchors=args.anchors,
                         img_size=args.img_size,
-                        max_detections=100,
+                        max_detections=300,  # Set to 300 for evaluation
                         use_class_thresholds=False,
                         box_scale=args.box_scale
                     )
@@ -1072,7 +1072,7 @@ def main():
     parser.add_argument('--model', type=str, default='base', choices=['base', 'strong'], help='Model variant')
     parser.add_argument('--box_scale', type=float, default=1.3, help='Box scale (increase to correct under-sized boxes)')
     parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
-    parser.add_argument('--eval_conf_thresh', type=float, default=0.01, help='Eval Confidence Threshold (LOW for mAP/PR computation)')
+    parser.add_argument('--eval_conf_thresh', type=float, default=0.25, help='Eval Confidence Threshold (set to 0.25 for evaluation)')
     parser.add_argument('--iou_thresh', type=float, default=0.35, help='IOU Threshold (LOWERED 0.45→0.35 for maximum NMS suppression)')
     parser.add_argument('--output_dir', default='weights', help='Output directory')
     parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
@@ -1569,15 +1569,16 @@ def main():
         # Extract first image if batch
         if output_tensor.dim() == 4:
             output_tensor = output_tensor[0]
-        
+
         boxes, scores, class_ids = decode_predictions_advanced(
-                                    output_tensor,  # Use the processed tensor, NOT outputs[0]
-                                    conf_thresh=args.eval_conf_thresh,
-                                    iou_thresh=args.iou_thresh,
-                                    anchors=args.anchors,
-                                    img_size=args.img_size,
-                                    box_scale=args.box_scale
-                                )
+            output_tensor,  # Use the processed tensor, NOT outputs[0]
+            conf_thresh=args.eval_conf_thresh,
+            iou_thresh=args.iou_thresh,
+            anchors=args.anchors,
+            img_size=args.img_size,
+            max_detections=300,  # Set to 300 for evaluation
+            box_scale=args.box_scale
+        )
         
         boxes = boxes.cpu()
         scores = scores.cpu()
@@ -1664,6 +1665,7 @@ def main():
                     iou_thresh=args.iou_thresh,
                     anchors=args.anchors,
                     img_size=args.img_size,
+                    max_detections=300,  # Set to 300 for evaluation
                     box_scale=args.box_scale
                 )
                 
