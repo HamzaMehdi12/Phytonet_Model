@@ -95,48 +95,32 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
                 union = gw * gh + aw * ah - inter
                 iou = inter / (union + 1e-6)
                 anchor_ious.append(iou.item())
-            
             anchor_ious = torch.tensor(anchor_ious, device=device)
-            
             label_idx = int(label.item())
-            
-            # Best anchor is ALWAYS assigned regardless of IoU
             best_anchor = anchor_ious.argmax()
-            
-            # Class-specific anchor assignment to improve localization
-            if label_idx == 0:  # stem
-                top_k = 2
-                iou_thresh = 0.35
-            else:  # tomato
-                top_k = 1
-                iou_thresh = 0.50
-            
-            # Get top-k anchors (includes best)
-            _, top_anchors = torch.topk(anchor_ious, min(top_k, len(anchor_ious)))
-            
-            # Use top-k anchors that pass IoU threshold
-            matching_anchors = [a for a in top_anchors if anchor_ious[a] >= iou_thresh]
-
-            # If nothing matches, only keep best anchor if it's not too bad
-            if len(matching_anchors) == 0 and anchor_ious[best_anchor] >= 0.20:
-                matching_anchors = [best_anchor]
-            elif len(matching_anchors) == 0:
+            # Unified stricter IoU threshold for both classes
+            iou_thresh = 0.35
+            # All anchors above threshold
+            matching_anchors = (anchor_ious > iou_thresh).nonzero(as_tuple=False).flatten()
+            # Fallback: assign best anchor if IoU > 0.30
+            if matching_anchors.numel() == 0 and anchor_ious[best_anchor] > 0.30:
+                matching_anchors = torch.tensor([best_anchor], device=device)
+            elif matching_anchors.numel() == 0:
                 continue
-            
-            # NO SPATIAL NEIGHBORS - assign only to center cell
-            spatial_cells = [(int(gy), int(gx))]  # Center cell ONLY
-            
+            # Limit number of positives per GT to 5
+            if matching_anchors.numel() > 5:
+                topk = torch.topk(anchor_ious[matching_anchors], 5)
+                matching_anchors = matching_anchors[topk.indices]
+            spatial_cells = [(int(gy), int(gx))]
             for anchor_idx in matching_anchors:
                 anchor_idx = int(anchor_idx.item())
                 label_idx_clamped = max(0, min(label_idx, num_classes - 1))
-                
                 for sy, sx in spatial_cells:
                     idx_center = anchor_idx * H * W + int(sy) * W + int(sx)
                     target_obj[b, idx_center] = 1.0
                     target_cls[b, idx_center, label_idx_clamped] = 1.0
                     target_boxes[b, idx_center] = gt_boxes[i]
                     total_positives += 1
-                
                     if label_idx == 0:
                         stem_positives += 1
                     else:
@@ -1225,7 +1209,7 @@ def main():
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
-        lambda_box=10.0,      # Box localization (boosted)
+        lambda_box=20.0,      # Box localization (boosted)
         lambda_obj=2.0,       # Objectness (balanced)
         lambda_cls=6.0,       # Classification (BALANCED 8.0→6.0 to prevent gradient conflict)
         class_weights=class_weights_tensor,
