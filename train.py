@@ -99,11 +99,11 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
             label_idx = int(label.item())
             best_anchor = anchor_ious.argmax()
             # Unified stricter IoU threshold for both classes
-            iou_thresh = 0.35
+            iou_thresh = 0.30
             # All anchors above threshold
             matching_anchors = (anchor_ious > iou_thresh).nonzero(as_tuple=False).flatten()
-            # Fallback: assign best anchor if IoU > 0.30
-            if matching_anchors.numel() == 0 and anchor_ious[best_anchor] > 0.30:
+            # Fallback: assign best anchor if IoU > 0.20
+            if matching_anchors.numel() == 0 and anchor_ious[best_anchor] > 0.20:
                 matching_anchors = torch.tensor([best_anchor], device=device)
             elif matching_anchors.numel() == 0:
                 continue
@@ -1209,7 +1209,7 @@ def main():
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
-        lambda_box=20.0,      # Box localization (boosted)
+        lambda_box=12.0,      # Box localization (boosted)
         lambda_obj=2.0,       # Objectness (balanced)
         lambda_cls=6.0,       # Classification (BALANCED 8.0→6.0 to prevent gradient conflict)
         class_weights=class_weights_tensor,
