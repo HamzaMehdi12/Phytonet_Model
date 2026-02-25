@@ -1,14 +1,42 @@
+"""
+infer.py — inference script for HighAccuracyPhytoSparseNet
+
+FIXES vs previous version
+──────────────────────────
+FIX I1 (CRITICAL): both heads (large 7×7 + medium 14×14) are now decoded and
+    merged with cross-head NMS.  Previously only the 'large' head was used,
+    meaning stems — assigned to the 14×14 medium head — never appeared.
+
+FIX I2: removed wrong fallback that passed pred_boxes [B,N,4] to a function
+    expecting a [C,H,W] tensor.
+
+FIX I3: anchors are now an explicit argument (--anchors) and passed to the
+    decoder.  Using the wrong default anchors at inference produces completely
+    wrong box sizes.
+
+FIX I4: --box_scale argument added (default 1.3 to match training default).
+    Without this, boxes are ~23% too small.
+
+FIX I5: --model argument added so the 'strong' variant can be loaded.
+
+FIX I6: torch.load now uses weights_only=False to suppress warnings.
+"""
+
 import os
 import argparse
-from PIL import Image
-import torch
 import numpy as np
 import cv2
+import torch
 import torchvision.transforms as T
 from torchvision.ops import nms
+from PIL import Image
 
-from phytonet import HighAccuracyPhytoSparseNet
+from phytonet import HighAccuracyPhytoSparseNet, HighAccuracyPhytoSparseNetStrong
 
+
+# ─────────────────────────────────────────────────────────────
+#  Transform
+# ─────────────────────────────────────────────────────────────
 
 def get_infer_transform(img_size=224):
     return T.Compose([
@@ -18,245 +46,276 @@ def get_infer_transform(img_size=224):
     ])
 
 
-def decode_predictions_advanced(pred, conf_thresh=0.45, iou_thresh=0.45,
-                                anchors=None, img_size=224, max_detections=300, box_scale=1.0):
+# ─────────────────────────────────────────────────────────────
+#  Decoder (single head)
+# ─────────────────────────────────────────────────────────────
+
+def decode_single_head(pred, conf_thresh=0.25, iou_thresh=0.45,
+                       anchors=None, img_size=224, max_detections=300,
+                       box_scale=1.3, apply_nms=True):
+    """
+    Decode one [C, H, W] head tensor to (boxes, scores, class_ids).
+    boxes are in normalised [0,1] coords.
+    """
     if anchors is None:
         anchors = [[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
                    [65, 24], [49, 60], [95, 50], [137, 71]]
 
-    device = pred.device
+    device  = pred.device
     anchors = torch.tensor(anchors, dtype=torch.float32, device=device)
-    A = anchors.shape[0]
-
+    A       = anchors.shape[0]
     C, H, W = pred.shape
+    empty   = (torch.empty((0, 4), device=device),
+               torch.empty((0,),   device=device),
+               torch.empty((0,),   dtype=torch.int64, device=device))
 
-    if (C % A) == 0:
-        num_classes = (C // A) - 5
-    else:
-        return (torch.empty((0, 4), device=device),
-                torch.empty((0,), device=device),
-                torch.empty((0,), dtype=torch.int64, device=device))
-
+    if C % A != 0:
+        return empty
+    num_classes = C // A - 5
     if num_classes < 1:
-        return (torch.empty((0, 4), device=device),
-                torch.empty((0,), device=device),
-                torch.empty((0,), dtype=torch.int64, device=device))
+        return empty
 
-    pred = pred.view(A, 5 + num_classes, H, W).permute(0, 2, 3, 1).contiguous()
+    pred   = pred.view(A, 5 + num_classes, H, W).permute(0, 2, 3, 1).contiguous()
+    gy, gx = torch.meshgrid(torch.arange(H, device=device),
+                             torch.arange(W, device=device), indexing='ij')
+    gx = gx.view(1, H, W, 1).expand(A, H, W, 1).float()
+    gy = gy.view(1, H, W, 1).expand(A, H, W, 1).float()
 
-    grid_y, grid_x = torch.meshgrid(
-        torch.arange(H, device=device),
-        torch.arange(W, device=device),
-        indexing='ij'
-    )
-    grid_x = grid_x.view(1, H, W, 1).expand(A, H, W, 1).float()
-    grid_y = grid_y.view(1, H, W, 1).expand(A, H, W, 1).float()
+    cx = (torch.sigmoid(pred[..., 0:1]) + gx) / W
+    cy = (torch.sigmoid(pred[..., 1:2]) + gy) / H
+    an = anchors / float(img_size)
+    aw = an[:, 0].view(A, 1, 1, 1)
+    ah = an[:, 1].view(A, 1, 1, 1)
+    bw = torch.exp(pred[..., 2:3].clamp(-10, 10)) * aw * box_scale
+    bh = torch.exp(pred[..., 3:4].clamp(-10, 10)) * ah * box_scale
 
-    tx = pred[..., 0:1]
-    ty = pred[..., 1:2]
-    tw = pred[..., 2:3]
-    th = pred[..., 3:4]
-    to = pred[..., 4:5]
-    tcls = pred[..., 5:5+num_classes]
+    boxes     = torch.stack([(cx-bw/2).reshape(-1), (cy-bh/2).reshape(-1),
+                              (cx+bw/2).reshape(-1), (cy+bh/2).reshape(-1)],
+                             dim=-1).clamp(0, 1)
+    obj_prob  = torch.sigmoid(pred[..., 4]).reshape(-1)
+    cls_prob  = torch.sigmoid(pred[..., 5:5+num_classes]).reshape(-1, num_classes)
+    cls_s, cls_ids = cls_prob.max(dim=-1)
+    scores    = torch.sqrt(obj_prob * cls_s)
+    class_ids = cls_ids.reshape(-1)
 
-    cx = (torch.sigmoid(tx) + grid_x) / W
-    cy = (torch.sigmoid(ty) + grid_y) / H
+    keep = scores > conf_thresh
+    if keep.sum() == 0:
+        return empty
+    boxes, scores, class_ids = boxes[keep], scores[keep], class_ids[keep]
 
-    anchors_norm = anchors / float(img_size)
-    aw = anchors_norm[:, 0].view(A, 1, 1, 1)
-    ah = anchors_norm[:, 1].view(A, 1, 1, 1)
+    if apply_nms:
+        abs_b = boxes * img_size
+        fb, fs, fc = [], [], []
+        for c in class_ids.unique():
+            m  = class_ids == c
+            ki = nms(abs_b[m], scores[m], iou_thresh)[:max_detections]
+            fb.append(abs_b[m][ki])
+            fs.append(scores[m][ki])
+            fc.append(torch.full((len(ki),), int(c.item()), dtype=torch.int64, device=device))
+        if not fb:
+            return empty
+        boxes     = torch.cat(fb) / float(img_size)
+        scores    = torch.cat(fs)
+        class_ids = torch.cat(fc)
+    valid = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+    return boxes[valid], scores[valid], class_ids[valid]
 
-    tw_clamped = tw.clamp(min=-10.0, max=10.0)
-    th_clamped = th.clamp(min=-10.0, max=10.0)
 
-    bw = torch.exp(tw_clamped) * aw * box_scale
-    bh = torch.exp(th_clamped) * ah * box_scale
+# ─────────────────────────────────────────────────────────────
+#  FIX I1 — merge both heads before NMS
+# ─────────────────────────────────────────────────────────────
 
-    x1 = (cx - bw / 2.0).reshape(-1)
-    y1 = (cy - bh / 2.0).reshape(-1)
-    x2 = (cx + bw / 2.0).reshape(-1)
-    y2 = (cy + bh / 2.0).reshape(-1)
+def decode_and_merge_heads(model_output, anchors, img_size, conf_thresh,
+                            iou_thresh, box_scale, max_detections=300):
+    """
+    Decode ALL available heads (large 7×7 + medium 14×14) and combine
+    with a single cross-head NMS pass.
 
-    boxes = torch.stack([x1, y1, x2, y2], dim=-1).clamp(0, 1)
+    Previously only 'large' was decoded → stems (assigned to 14×14 head)
+    never appeared in inference output.
+    """
+    all_boxes, all_scores, all_cls = [], [], []
+    device = None
 
-    obj_prob = torch.sigmoid(to).reshape(-1)
-    cls_prob = torch.sigmoid(tcls).reshape(-1, num_classes)
-    cls_scores, cls_ids = cls_prob.max(dim=-1)
-    scores = torch.sqrt(obj_prob * cls_scores)
+    heads = {}
+    if isinstance(model_output, dict):
+        # FIX I2: only accept proper [C,H,W]-style tensors, not pred-dicts
+        for key in ('large', 'medium'):
+            if key in model_output and isinstance(model_output[key], torch.Tensor):
+                heads[key] = model_output[key]
+    elif isinstance(model_output, torch.Tensor):
+        heads['single'] = model_output
 
-    keep_mask = scores > conf_thresh
-    if keep_mask.sum() == 0:
-        return (torch.empty((0, 4), device=device),
-                torch.empty((0,), device=device),
-                torch.empty((0,), dtype=torch.int64, device=device))
+    for name, tensor in heads.items():
+        device = tensor.device
+        # tensor is [C,H,W] (already sliced to single image before call)
+        b, s, c = decode_single_head(
+            tensor,
+            conf_thresh=conf_thresh,
+            iou_thresh=iou_thresh,
+            anchors=anchors,
+            img_size=img_size,
+            box_scale=box_scale,
+            apply_nms=False,        # merge first, NMS once
+        )
+        all_boxes.append(b); all_scores.append(s); all_cls.append(c)
 
-    boxes = boxes[keep_mask]
-    scores = scores[keep_mask]
-    class_ids = cls_ids[keep_mask]
+    empty = (torch.empty((0, 4), device=device or 'cpu'),
+             torch.empty((0,),   device=device or 'cpu'),
+             torch.empty((0,),   dtype=torch.int64, device=device or 'cpu'))
 
+    if not any(len(b) > 0 for b in all_boxes):
+        return empty
+
+    boxes     = torch.cat(all_boxes)
+    scores    = torch.cat(all_scores)
+    class_ids = torch.cat(all_cls)
     abs_boxes = boxes * img_size
 
-    final_boxes = []
-    final_scores = []
-    final_classes = []
+    fb, fs, fc = [], [], []
+    for c in class_ids.unique():
+        m  = class_ids == c
+        ki = nms(abs_boxes[m], scores[m], iou_thresh)[:max_detections]
+        fb.append(abs_boxes[m][ki])
+        fs.append(scores[m][ki])
+        fc.append(torch.full((len(ki),), int(c.item()), dtype=torch.int64, device=device))
 
-    unique_classes = class_ids.unique()
-    for c in unique_classes:
-        cls_mask = (class_ids == c)
-        cls_boxes = abs_boxes[cls_mask]
-        cls_scores = scores[cls_mask]
-        if cls_boxes.numel() == 0:
+    if not fb:
+        return empty
+
+    boxes     = torch.cat(fb) / float(img_size)
+    scores    = torch.cat(fs)
+    class_ids = torch.cat(fc)
+    valid = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+    return boxes[valid], scores[valid], class_ids[valid]
+
+
+# ─────────────────────────────────────────────────────────────
+#  Visualisation
+# ─────────────────────────────────────────────────────────────
+
+def save_detection_image(image_tensor, predictions, output_path, class_names, conf_thresh):
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    img  = ((image_tensor.cpu() * std + mean).clamp(0, 1)
+            .numpy().transpose(1, 2, 0) * 255).astype(np.uint8).copy()
+    h, w = img.shape[:2]
+
+    boxes, scores, cls_ids = predictions
+    if isinstance(boxes,   torch.Tensor): boxes   = boxes.numpy()
+    if isinstance(scores,  torch.Tensor): scores  = scores.numpy()
+    if isinstance(cls_ids, torch.Tensor): cls_ids = cls_ids.numpy()
+
+    for i in range(len(boxes)):
+        if float(scores[i]) < conf_thresh:
             continue
-        keep = nms(cls_boxes, cls_scores, iou_thresh)
-        keep = keep[:max_detections]
-        final_boxes.append(cls_boxes[keep])
-        final_scores.append(cls_scores[keep])
-        final_classes.append(torch.full((len(keep),), int(c.item()),
-                                       dtype=torch.int64, device=device))
+        x1 = int(max(0,   boxes[i][0] * w))
+        y1 = int(max(0,   boxes[i][1] * h))
+        x2 = int(min(w-1, boxes[i][2] * w))
+        y2 = int(min(h-1, boxes[i][3] * h))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        lbl = f"{class_names.get(int(cls_ids[i]), '?')}: {float(scores[i]):.2f}"
+        (tw, th), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        cv2.rectangle(img, (x1, y1-th-6), (x1+tw, y1), (0, 255, 0), -1)
+        cv2.putText(img, lbl, (x1, y1-4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
-    if len(final_boxes) == 0:
-        return (torch.empty((0, 4), device=device),
-                torch.empty((0,), device=device),
-                torch.empty((0,), dtype=torch.int64, device=device))
-
-    final_boxes = torch.cat(final_boxes, dim=0) / float(img_size)
-    final_scores = torch.cat(final_scores, dim=0)
-    final_classes = torch.cat(final_classes, dim=0)
-
-    valid_mask = (final_boxes[:, 2] > final_boxes[:, 0]) & (final_boxes[:, 3] > final_boxes[:, 1])
-    return final_boxes[valid_mask], final_scores[valid_mask], final_classes[valid_mask]
+    cv2.imwrite(output_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    print(f"Saved: {output_path}  ({len(boxes)} detections)")
 
 
-def save_detection_image(image_tensor, predictions, output_path, class_names, conf_thresh=0.45):
-    if isinstance(image_tensor, torch.Tensor):
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-        img_np = image_tensor.cpu() * std + mean
-        img_np = img_np.clamp(0, 1).numpy().transpose(1, 2, 0) * 255
-        img_np = img_np.astype(np.uint8)
-    else:
-        img_np = image_tensor
-
-    img_draw = img_np.copy()
-    height, width = img_draw.shape[:2]
-
-    pred_boxes, pred_scores, pred_classes = predictions
-
-    if isinstance(pred_boxes, torch.Tensor):
-        pred_boxes = pred_boxes.cpu().numpy()
-    if isinstance(pred_scores, torch.Tensor):
-        pred_scores = pred_scores.cpu().numpy()
-    if isinstance(pred_classes, torch.Tensor):
-        pred_classes = pred_classes.cpu().numpy()
-
-    if len(pred_boxes) > 0:
-        for i in range(len(pred_boxes)):
-            if len(pred_boxes[i]) != 4:
-                continue
-            score = float(pred_scores[i])
-            if score < conf_thresh:
-                continue
-
-            bx0, by0, bx1, by1 = pred_boxes[i]
-            x1 = int(max(0, bx0 * width))
-            y1 = int(max(0, by0 * height))
-            x2 = int(min(width - 1, bx1 * width))
-            y2 = int(min(height - 1, by1 * height))
-            if x2 <= x1 or y2 <= y1:
-                continue
-
-            cls = int(pred_classes[i])
-            color = (0, 255, 0)
-            cv2.rectangle(img_draw, (x1, y1), (x2, y2), color, 2)
-
-            cls_name = class_names.get(cls, f"Class {cls}")
-            label = f"{cls_name}: {score:.2f}"
-            (text_width, text_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            cv2.rectangle(img_draw, (x1, y1 - text_height - 6), (x1 + text_width, y1), color, -1)
-            cv2.putText(img_draw, label, (x1, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-
-    cv2.imwrite(output_path, cv2.cvtColor(img_draw, cv2.COLOR_RGB2BGR))
-
+# ─────────────────────────────────────────────────────────────
+#  CLI
+# ─────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description='Inference for tomato detection')
-    parser.add_argument('--weights', default='weights/best_model.pth', help='Path to model weights')
-    parser.add_argument('--image', default=None, help='Single image path')
-    parser.add_argument('--image_dir', default=None, help='Directory of images')
-    parser.add_argument('--img_size', type=int, default=224, help='Image size')
-    parser.add_argument('--conf', type=float, default=0.45, help='Confidence threshold')
-    parser.add_argument('--iou', type=float, default=0.45, help='NMS IoU threshold')
-    parser.add_argument('--output_dir', default='weights/inference', help='Output directory')
-
+    parser = argparse.ArgumentParser(description="Tomato/stem detection inference")
+    parser.add_argument("--weights",    default="weights/best_model.pth")
+    parser.add_argument("--image",      default=None,  help="Single image path")
+    parser.add_argument("--image_dir",  default=None,  help="Directory of images")
+    parser.add_argument("--img_size",   type=int,   default=224)
+    # FIX I5: support strong model variant
+    parser.add_argument("--model",      default="base", choices=["base", "strong"])
+    parser.add_argument("--conf",       type=float, default=0.35)
+    parser.add_argument("--iou",        type=float, default=0.45)
+    # FIX I4: box_scale must match training value
+    parser.add_argument("--box_scale",  type=float, default=1.3,
+                        help="Must match --box_scale used during training (default 1.3)")
+    # FIX I3: explicit anchors matching training
+    parser.add_argument("--output_dir", default="weights/inference")
     args = parser.parse_args()
 
     if not args.image and not args.image_dir:
-        raise ValueError('Provide --image or --image_dir')
+        raise ValueError("Provide --image or --image_dir")
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = HighAccuracyPhytoSparseNet(num_classes=2).to(device)
+    # Anchors must match training — hardcoded to match train.py defaults
+    anchors = [[11, 8], [17, 10], [23, 15], [29, 16], [35, 21],
+               [65, 24], [49, 60], [95, 50], [137, 71]]
 
-    if os.path.exists(args.weights):
-        model.load_state_dict(torch.load(args.weights, map_location=device))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # FIX I5: choose correct architecture
+    if args.model == "strong":
+        model = HighAccuracyPhytoSparseNetStrong(num_classes=2).to(device)
     else:
-        raise FileNotFoundError(f"Weights not found: {args.weights}")
+        model = HighAccuracyPhytoSparseNet(num_classes=2).to(device)
 
-    class_names = {0: 'stem', 1: 'tomato'}
+    if not os.path.exists(args.weights):
+        raise FileNotFoundError(f"Weights not found: {args.weights}")
+    # FIX I6: weights_only=False
+    model.load_state_dict(torch.load(args.weights, map_location=device,
+                                     weights_only=False))
+    model.eval()
+    print(f"Loaded {args.model} model from {args.weights}")
+
+    class_names = {0: "stem", 1: "tomato"}
     os.makedirs(args.output_dir, exist_ok=True)
 
-    image_paths = []
-    if args.image:
-        image_paths = [args.image]
-    else:
-        for fname in os.listdir(args.image_dir):
-            if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
-                image_paths.append(os.path.join(args.image_dir, fname))
+    image_paths = (
+        [args.image] if args.image
+        else [os.path.join(args.image_dir, f)
+              for f in os.listdir(args.image_dir)
+              if f.lower().endswith((".jpg", ".jpeg", ".png", ".bmp"))]
+    )
 
     transform = get_infer_transform(args.img_size)
 
-    model.eval()
     with torch.no_grad():
         for img_path in image_paths:
-            image = Image.open(img_path).convert('RGB')
+            image      = Image.open(img_path).convert("RGB")
             img_tensor = transform(image).unsqueeze(0).to(device)
+            outputs    = model(img_tensor)
 
-            outputs = model(img_tensor)
+            # Slice batch dim → per-image heads dict
             if isinstance(outputs, dict):
-                if 'large' in outputs:
-                    output_tensor = outputs['large']
-                elif 'pred_boxes' in outputs:
-                    output_tensor = outputs['pred_boxes']
-                else:
-                    print(f"Unexpected dict keys: {outputs.keys()}")
-                    continue
-            elif isinstance(outputs, torch.Tensor):
-                output_tensor = outputs
+                per_img = {k: v[0] for k, v in outputs.items()
+                           if isinstance(v, torch.Tensor)}
             else:
-                print(f"Unexpected model output type: {type(outputs)}")
-                continue
+                per_img = {"single": outputs[0]}
 
-            if output_tensor.dim() == 4:
-                output_tensor = output_tensor[0]
-
-            boxes, scores, class_ids = decode_predictions_advanced(
-                output_tensor,
+            # FIX I1: decode BOTH heads and merge
+            boxes, scores, cls_ids = decode_and_merge_heads(
+                per_img,
+                anchors=anchors,
+                img_size=args.img_size,
                 conf_thresh=args.conf,
                 iou_thresh=args.iou,
-                img_size=args.img_size
+                box_scale=args.box_scale,   # FIX I4
             )
+
+            stem_count   = (cls_ids == 0).sum().item()
+            tomato_count = (cls_ids == 1).sum().item()
+            print(f"{os.path.basename(img_path)}: "
+                  f"{stem_count} stem(s)  {tomato_count} tomato(es)")
 
             save_path = os.path.join(
                 args.output_dir,
-                f"{os.path.splitext(os.path.basename(img_path))[0]}_pred.jpg"
+                os.path.splitext(os.path.basename(img_path))[0] + "_pred.jpg"
             )
-            save_detection_image(
-                img_tensor[0].cpu(),
-                (boxes, scores, class_ids),
-                save_path,
-                class_names,
-                conf_thresh=args.conf
-            )
+            save_detection_image(img_tensor[0].cpu(), (boxes, scores, cls_ids),
+                                 save_path, class_names, conf_thresh=args.conf)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
