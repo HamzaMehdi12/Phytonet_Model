@@ -93,9 +93,6 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
                 union = gw * gh + aw * ah - inter
                 iou = inter / (union + 1e-6)
                 anchor_ious.append(iou.item())
-            # Debug: Print anchor IoUs for first batch/first GT
-            if b == 0 and i == 0:
-                print(f"[DEBUG][TargetAssign] GT label: {int(label)}, Anchor IoUs: {[round(x,3) for x in anchor_ious]}")
             
             anchor_ious = torch.tensor(anchor_ious, device=device)
             
@@ -690,6 +687,8 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
             class_metrics=True,
             iou_thresholds=[0.5]
         )
+        # Suppress warning about >100 detections
+        map_metric.warn_on_many_detections = False
         
         with torch.no_grad():
             for idx, (imgs, targets) in enumerate(dataloader):
