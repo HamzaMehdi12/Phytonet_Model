@@ -1304,9 +1304,13 @@ def main():
                     raise TypeError(f"Unexpected model output type: {type(model_output_for_shape)}")
                 targets_for_loss = prepare_targets_for_loss(targets, output_tensor_shape.shape, img_size=args.img_size, anchors=args.anchors, num_classes=2)
                 # Forward pass
+
                 with autocast(enabled=amp_enabled):
                     model_output = model(imgs)
                     preds_for_loss = prepare_predictions_for_loss(model_output, num_classes=2)
+                    # If preds_for_loss is a dict with 'large', extract it
+                    if isinstance(preds_for_loss, dict) and 'large' in preds_for_loss:
+                        preds_for_loss = preds_for_loss['large']
                     loss, obj_loss, cls_loss, box_loss = loss_fn(preds_for_loss, targets_for_loss)
 
                 if torch.isnan(loss).any() or torch.isinf(loss).any():
