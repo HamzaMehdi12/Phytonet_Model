@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 
 
 class ConvBlock(nn.Module):
@@ -113,164 +114,12 @@ class CBAM(nn.Module):
 class HighAccuracyPhytoSparseNet(nn.Module):
     """
     Custom YOLOv11-inspired detection model with unique PhytoNet architecture.
-    
-    OPTIMIZED for edge deployment with high mAP (YOLOv8m-sized but custom structure)
-    
-    Unique Features (NOT in standard YOLO):
-    - C2f blocks with CBAM attention (superior feature extraction)
-    - SPPF for multi-scale aggregation
-    - FPN-style neck with custom fusion
-    - Deeper detection head with dropout
-    
-    Size: ~24-28M params, ~50 MB (YOLOv8m-equivalent, edge deployable)
-    Target: 60-75% mAP@50 with COCO pretraining + fine-tuning
-    
-    Output shape: [B, A*(5+C), H, W] where:
-        - B = batch size
-        - A = number of anchors (9)
-        - C = number of classes (2)
-        - H, W = grid dimensions (7x7 for final output)
-        - 5 = (tx, ty, tw, th, objectness)
-    
-    For 9 anchors and 2 classes: 9 * (5 + 2) = 63 output channels
     """
     def __init__(self, num_classes=2, num_anchors=9, width_mult=0.75, depth_mult=0.67):
         super().__init__()
         self.num_classes = num_classes
         self.num_anchors = num_anchors
         
-        # Calculate channel sizes with width multiplier - OPTIMIZED for YOLOv8m size
-        def make_divisible(x, divisor=8):
-            return int((x + divisor / 2) // divisor * divisor)
-        
-        # YOLOv8m-equivalent channels (0.75x multiplier)
-        c1 = make_divisible(64 * width_mult)      # 48
-        c2 = make_divisible(128 * width_mult)     # 96
-        c3 = make_divisible(256 * width_mult)     # 192
-        c4 = make_divisible(512 * width_mult)     # 384
-        c5 = make_divisible(512 * width_mult)     # 384
-        
-        # Calculate depth (number of bottlenecks) - YOLOv8m-equivalent (0.67x)
-        n1 = max(round(3 * depth_mult), 1)        # 2
-        n2 = max(round(6 * depth_mult), 1)        # 4
-        n3 = max(round(9 * depth_mult), 1)        # 6
-        n4 = max(round(3 * depth_mult), 1)        # 2
-        
-        # ============= BACKBONE =============
-        # Stem
-        self.stem = ConvBlock(3, c1, k=3, s=2, p=1)  # 224 -> 112
-        
-        # Stage 1
-        self.stage1 = nn.Sequential(
-            ConvBlock(c1, c2, k=3, s=2, p=1),  # 112 -> 56
-            C2f(c2, c2, n=n1, shortcut=True),
-            CBAM(c2)
-        )
-        
-        # Stage 2
-        self.stage2 = nn.Sequential(
-            ConvBlock(c2, c3, k=3, s=2, p=1),  # 56 -> 28
-            C2f(c3, c3, n=n2, shortcut=True),
-            CBAM(c3)
-        )
-        
-        # Stage 3
-        self.stage3 = nn.Sequential(
-            ConvBlock(c3, c4, k=3, s=2, p=1),  # 28 -> 14
-            C2f(c4, c4, n=n3, shortcut=True),
-            CBAM(c4)
-        )
-        
-        # Stage 4
-        self.stage4 = nn.Sequential(
-            ConvBlock(c4, c5, k=3, s=2, p=1),  # 14 -> 7
-            C2f(c5, c5, n=n1, shortcut=True),
-            SPPF(c5, c5, k=5),
-            CBAM(c5)
-        )
-        
-        # ============= NECK (FPN-style) =============
-        # Upsample path
-        self.up1 = nn.Upsample(scale_factor=2, mode='nearest')
-        self.lateral1 = ConvBlock(c4, c5, k=1, s=1, p=0)
-        self.c2f_up1 = C2f(c5 * 2, c4, n=n4, shortcut=False)
-        
-        # Downsample path (for multi-scale)
-        self.down1 = ConvBlock(c4, c4, k=3, s=2, p=1)
-        self.c2f_down1 = C2f(c4 + c5, c5, n=n4, shortcut=False)
-        
-        # ============= DETECTION HEADS =============
-        output_channels = self.num_anchors * (5 + self.num_classes)
-        
-        # Head for 14x14 feature map (better for small objects like stems)
-        self.head_medium = nn.Sequential(
-            C2f(c4, c4, n=n4, shortcut=False),
-            ConvBlock(c4, c4, k=3, s=1, p=1),
-            ConvBlock(c4, c4, k=1, s=1, p=0),
-            nn.Dropout2d(p=0.10),
-            nn.Conv2d(c4, output_channels, kernel_size=1, stride=1, padding=0)
-        )
-
-        # Head for 7x7 feature map (large objects)
-        self.head_large = nn.Sequential(
-            C2f(c5, c5, n=n4, shortcut=False),
-            ConvBlock(c5, c5, k=3, s=1, p=1),
-            ConvBlock(c5, c5, k=1, s=1, p=0),  # 1x1 conv for channel mixing
-            nn.Dropout2d(p=0.15),  # Moderate dropout
-            nn.Conv2d(c5, output_channels, kernel_size=1, stride=1, padding=0)
-        )
-
-    def forward(self, x):
-        """
-        Args:
-            x: Input tensor [B, 3, H, W]
-        Returns:
-            Dict with both head outputs: { 'medium': [B, C, 14, 14], 'large': [B, C, 7, 7] }
-        """
-        # Backbone
-        x = self.stem(x)
-        s1 = self.stage1(x)
-        s2 = self.stage2(s1)
-        s3 = self.stage3(s2)
-        s4 = self.stage4(s3)
-        # Neck - FPN style
-        p4 = self.up1(s4)
-        p4 = torch.cat([p4, self.lateral1(s3)], dim=1)
-        p4 = self.c2f_up1(p4)
-        p5 = self.down1(p4)
-        p5 = torch.cat([p5, s4], dim=1)
-        p5 = self.c2f_down1(p5)
-        # Detection heads
-        output_medium = self.head_medium(p4)  # [B, C, 14, 14]
-        output_large = self.head_large(p5)    # [B, C, 7, 7]
-        return { 'medium': output_medium, 'large': output_large }
-
-
-class HighAccuracyPhytoSparseNetStrong(HighAccuracyPhytoSparseNet):
-    """
-    Stronger variant of PhytoSparseNet with increased width/depth.
-    Same structure, higher capacity for better accuracy.
-    """
-    def __init__(self, num_classes=2, num_anchors=9):
-        super().__init__(
-            num_classes=num_classes,
-            num_anchors=num_anchors,
-            width_mult=1.0,
-            depth_mult=1.0
-        )
-
-
-class HighAccuracyPhytoSparseNetDict(nn.Module):
-    """
-    Same YOLOv11-inspired architecture but returns predictions in dict format.
-    This version directly outputs the dict expected by your original loss function.
-    """
-    def __init__(self, num_classes=2, num_anchors=9, width_mult=1.0, depth_mult=1.0):
-        super().__init__()
-        self.num_classes = num_classes
-        self.num_anchors = num_anchors
-        
-        # Calculate channel sizes
         def make_divisible(x, divisor=8):
             return int((x + divisor / 2) // divisor * divisor)
         
@@ -290,12 +139,14 @@ class HighAccuracyPhytoSparseNetDict(nn.Module):
         
         self.stage1 = nn.Sequential(
             ConvBlock(c1, c2, k=3, s=2, p=1),
-            C2f(c2, c2, n=n1, shortcut=True)
+            C2f(c2, c2, n=n1, shortcut=True),
+            CBAM(c2)
         )
         
         self.stage2 = nn.Sequential(
             ConvBlock(c2, c3, k=3, s=2, p=1),
             C2f(c3, c3, n=n2, shortcut=True),
+            CBAM(c3)
         )
         
         self.stage3 = nn.Sequential(
@@ -311,7 +162,7 @@ class HighAccuracyPhytoSparseNetDict(nn.Module):
             CBAM(c5)
         )
         
-        # Neck
+        # Neck (FPN-style)
         self.up1 = nn.Upsample(scale_factor=2, mode='nearest')
         self.lateral1 = ConvBlock(c4, c5, k=1, s=1, p=0)
         self.c2f_up1 = C2f(c5 * 2, c4, n=n4, shortcut=False)
@@ -319,37 +170,32 @@ class HighAccuracyPhytoSparseNetDict(nn.Module):
         self.down1 = ConvBlock(c4, c4, k=3, s=2, p=1)
         self.c2f_down1 = C2f(c4 + c5, c5, n=n4, shortcut=False)
         
-        # Separate heads for each component
-        self.head_box = nn.Sequential(
-            C2f(c5, c5, n=n1, shortcut=False),
-            nn.Conv2d(c5, num_anchors * 4, kernel_size=1)
+        # Detection Heads
+        output_channels = self.num_anchors * (5 + self.num_classes)
+        
+        self.head_medium = nn.Sequential(
+            C2f(c4, c4, n=n4, shortcut=False),
+            ConvBlock(c4, c4, k=3, s=1, p=1),
+            ConvBlock(c4, c4, k=1, s=1, p=0),
+            nn.Dropout2d(p=0.10),
+            nn.Conv2d(c4, output_channels, kernel_size=1, stride=1, padding=0)
         )
-        self.head_obj = nn.Sequential(
-            C2f(c5, c5, n=n1, shortcut=False),
-            nn.Conv2d(c5, num_anchors * 1, kernel_size=1)
-        )
-        self.head_cls = nn.Sequential(
-            C2f(c5, c5, n=n1, shortcut=False),
-            nn.Conv2d(c5, num_anchors * num_classes, kernel_size=1)
+
+        self.head_large = nn.Sequential(
+            C2f(c5, c5, n=n4, shortcut=False),
+            ConvBlock(c5, c5, k=3, s=1, p=1),
+            ConvBlock(c5, c5, k=1, s=1, p=0),
+            nn.Dropout2d(p=0.15),
+            nn.Conv2d(c5, output_channels, kernel_size=1, stride=1, padding=0)
         )
 
     def forward(self, x):
-        """
-        Returns dict with:
-        - pred_boxes: [B, A*H*W, 4]
-        - pred_obj: [B, A*H*W]
-        - pred_cls: [B, A*H*W, num_classes]
-        """
-        B = x.size(0)
-        
-        # Backbone
         x = self.stem(x)
         s1 = self.stage1(x)
         s2 = self.stage2(s1)
         s3 = self.stage3(s2)
         s4 = self.stage4(s3)
         
-        # Neck
         p4 = self.up1(s4)
         p4 = torch.cat([p4, self.lateral1(s3)], dim=1)
         p4 = self.c2f_up1(p4)
@@ -358,121 +204,198 @@ class HighAccuracyPhytoSparseNetDict(nn.Module):
         p5 = torch.cat([p5, s4], dim=1)
         p5 = self.c2f_down1(p5)
         
-        H, W = p5.shape[2:]
+        output_medium = self.head_medium(p4)
+        output_large = self.head_large(p5)
         
-        # Predictions
-        pred_box = self.head_box(p5)  # [B, A*4, H, W]
-        pred_obj = self.head_obj(p5)  # [B, A*1, H, W]
-        pred_cls = self.head_cls(p5)  # [B, A*C, H, W]
+        return {'medium': output_medium, 'large': output_large}
+
+
+class HighAccuracyPhytoSparseNetStrong(HighAccuracyPhytoSparseNet):
+    """Stronger variant with increased width/depth."""
+    def __init__(self, num_classes=2, num_anchors=9):
+        super().__init__(
+            num_classes=num_classes,
+            num_anchors=num_anchors,
+            width_mult=1.0,
+            depth_mult=1.0
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PhytoNetEdge  –  edge-deployable detector with pretrained MobileNetV3-Small
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PhytoNetEdge(nn.Module):
+    """
+    Edge-deployable botanical detector.
+    Uses a pretrained MobileNetV3-Small backbone with a 3-scale FPN + PANet head.
+    
+    FIXES APPLIED:
+    - Proper channel dimensions for each head
+    - Improved neck with better feature fusion
+    - Consistent 3 anchors per head (21 output channels each)
+    
+    Architecture:
+        Backbone: MobileNetV3-Small (ImageNet pretrained, ~2.5M params)
+        Neck: FPN + PANet style bidirectional feature fusion
+        Heads: 3 detection heads at 28×28, 14×14, 7×7
+    
+    Recommended anchors (tuned for stems + tomatoes):
+        anchors_small  = [[10,6],  [15,9],  [22,14]]   # stride-8  (28×28)
+        anchors_medium = [[28,18], [38,25], [55,35]]   # stride-16 (14×14)
+        anchors_large  = [[70,45], [95,60], [130,80]]  # stride-32 (7×7)
+    """
+
+    # MobileNetV3-Small feature channel sizes
+    _C_P3 = 24    # features[:4]  → 28×28 (stride 8)
+    _C_P4 = 48    # features[4:9] → 14×14 (stride 16)
+    _C_P5 = 576   # features[9:]  →  7×7  (stride 32)
+
+    def __init__(self, num_classes: int = 2, num_anchors: int = 3,
+                 neck_channels: int = 96):
+        super().__init__()
+        self.num_classes = num_classes
+        self.num_anchors = num_anchors
+        self.neck_channels = neck_channels
+
+        # ── Backbone ─────────────────────────────────────────────────────────
+        try:
+            from torchvision.models import (mobilenet_v3_small,
+                                            MobileNet_V3_Small_Weights)
+            backbone = mobilenet_v3_small(
+                weights=MobileNet_V3_Small_Weights.IMAGENET1K_V1)
+        except (ImportError, AttributeError):
+            from torchvision.models import mobilenet_v3_small
+            backbone = mobilenet_v3_small(pretrained=True)
+
+        feats = backbone.features
+
+        # Split into three stages for multi-scale features
+        self.stage_p3 = feats[:4]    # out: 28×28, 24 ch  (stride 8)
+        self.stage_p4 = feats[4:9]   # out: 14×14, 48 ch  (stride 16)
+        self.stage_p5 = feats[9:]    # out:  7×7, 576 ch  (stride 32)
+
+        nc = neck_channels
+
+        # ── FPN Neck (Top-down path) ──────────────────────────────────────────
+        self.lat5 = ConvBlock(self._C_P5, nc, k=1, s=1, p=0)
+        self.lat4 = ConvBlock(self._C_P4, nc, k=1, s=1, p=0)
+        self.lat3 = ConvBlock(self._C_P3, nc, k=1, s=1, p=0)
+
+        self.up = nn.Upsample(scale_factor=2, mode='nearest')
+
+        # Top-down fusion convs
+        self.fuse_p4 = ConvBlock(nc * 2, nc, k=3, s=1, p=1)
+        self.fuse_p3 = ConvBlock(nc * 2, nc, k=3, s=1, p=1)
+
+        # ── PANet (Bottom-up path) ────────────────────────────────────────────
+        self.bu_conv_p3 = ConvBlock(nc, nc, k=3, s=2, p=1)  # 28→14
+        self.bu_fuse_p4 = ConvBlock(nc * 2, nc, k=3, s=1, p=1)
         
-        A = self.num_anchors
+        self.bu_conv_p4 = ConvBlock(nc, nc, k=3, s=2, p=1)  # 14→7
+        self.bu_fuse_p5 = ConvBlock(nc * 2, nc, k=3, s=1, p=1)
+
+        # ── Detection Heads ───────────────────────────────────────────────────
+        out_ch = num_anchors * (5 + num_classes)  # 3 × 7 = 21
+
+        # Small objects head (28×28) - uses only top-down features
+        self.head_small = nn.Sequential(
+            ConvBlock(nc, nc, k=3, s=1, p=1),
+            ConvBlock(nc, nc, k=3, s=1, p=1),
+            nn.Conv2d(nc, out_ch, kernel_size=1),
+        )
         
-        # Reshape boxes
-        pred_box = pred_box.view(B, A, 4, H, W).permute(0, 1, 3, 4, 2).contiguous()
-        pred_box = pred_box.view(B, A * H * W, 4)
+        # Medium objects head (14×14) - uses PANet augmented features
+        self.head_medium = nn.Sequential(
+            ConvBlock(nc, nc, k=3, s=1, p=1),
+            ConvBlock(nc, nc, k=3, s=1, p=1),
+            nn.Conv2d(nc, out_ch, kernel_size=1),
+        )
         
-        # Reshape objectness
-        pred_obj = pred_obj.view(B, A, H, W)
-        pred_obj = pred_obj.view(B, A * H * W)
-        
-        # Reshape classes
-        pred_cls = pred_cls.view(B, A, self.num_classes, H, W).permute(0, 1, 3, 4, 2).contiguous()
-        pred_cls = pred_cls.view(B, A * H * W, self.num_classes)
-        
+        # Large objects head (7×7) - uses PANet augmented features
+        self.head_large = nn.Sequential(
+            ConvBlock(nc, nc, k=3, s=1, p=1),
+            ConvBlock(nc, nc, k=3, s=1, p=1),
+            nn.Conv2d(nc, out_ch, kernel_size=1),
+        )
+
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize detection head weights for better convergence."""
+        for m in [self.head_small, self.head_medium, self.head_large]:
+            for layer in m:
+                if isinstance(layer, nn.Conv2d):
+                    nn.init.normal_(layer.weight, mean=0, std=0.01)
+                    if layer.bias is not None:
+                        # Initialize objectness bias for ~1% positive rate
+                        # bias = -log((1-p)/p) where p=0.01
+                        nn.init.constant_(layer.bias, -4.6)
+
+    def forward(self, x: torch.Tensor):
+        # ── Backbone feature extraction ───────────────────────────────────────
+        p3 = self.stage_p3(x)   # [B, 24, 28, 28]
+        p4 = self.stage_p4(p3)  # [B, 48, 14, 14]
+        p5 = self.stage_p5(p4)  # [B, 576, 7, 7]
+
+        # ── FPN Top-down path ─────────────────────────────────────────────────
+        f5 = self.lat5(p5)  # [B, nc, 7, 7]
+        f4 = self.fuse_p4(torch.cat([self.up(f5), self.lat4(p4)], dim=1))  # [B, nc, 14, 14]
+        f3 = self.fuse_p3(torch.cat([self.up(f4), self.lat3(p3)], dim=1))  # [B, nc, 28, 28]
+
+        # ── PANet Bottom-up path ──────────────────────────────────────────────
+        f4_bu = self.bu_fuse_p4(torch.cat([self.bu_conv_p3(f3), f4], dim=1))  # [B, nc, 14, 14]
+        f5_bu = self.bu_fuse_p5(torch.cat([self.bu_conv_p4(f4_bu), f5], dim=1))  # [B, nc, 7, 7]
+
+        # ── Detection heads ───────────────────────────────────────────────────
         return {
-            "pred_boxes": pred_box,
-            "pred_obj": pred_obj,
-            "pred_cls": pred_cls
+            'small':  self.head_small(f3),      # [B, 21, 28, 28] - small objects
+            'medium': self.head_medium(f4_bu),  # [B, 21, 14, 14] - medium objects
+            'large':  self.head_large(f5_bu),   # [B, 21, 7, 7]   - large objects
         }
 
+    @staticmethod
+    def backbone_params(model):
+        """Return backbone parameter groups (for differential LR)."""
+        return (list(model.stage_p3.parameters()) +
+                list(model.stage_p4.parameters()) +
+                list(model.stage_p5.parameters()))
 
-# For testing
+    @staticmethod
+    def head_params(model):
+        """Return neck + head parameters."""
+        backbone_ids = {id(p) for p in PhytoNetEdge.backbone_params(model)}
+        return [p for p in model.parameters() if id(p) not in backbone_ids]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Testing
+# ─────────────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    print("="*80)
-    print("Testing YOLOv11-Inspired HighAccuracyPhytoSparseNet")
-    print("="*80)
+    print("=" * 80)
+    print("Testing PhytoNetEdge")
+    print("=" * 80)
     
-    # Test tensor output version
-    print("\n1. Testing Tensor Output Version...")
-    print("-" * 80)
-    model = HighAccuracyPhytoSparseNet(num_classes=2, num_anchors=9)
+    model = PhytoNetEdge(num_classes=2, num_anchors=3)
     x = torch.randn(2, 3, 224, 224)
     output = model(x)
     
-    print(f"Input shape: {x.shape}")
-    print(f"Output shape: {output.shape}")
+    print(f"\nInput shape: {x.shape}")
+    print(f"Output heads:")
+    for name, tensor in output.items():
+        print(f"  {name}: {tensor.shape}")
+        expected_ch = 3 * (5 + 2)  # 3 anchors × 7 values = 21
+        assert tensor.shape[1] == expected_ch, f"Expected {expected_ch} channels"
     
-    # Verify output shape
-    B, C, H, W = output.shape
-    expected_channels = 9 * (5 + 2)  # 9 anchors * 7 values = 63
-    assert C == expected_channels, f"Expected {expected_channels} channels, got {C}"
-    print(f"✓ Tensor output correct: {C} channels = 9 anchors * 7 values")
-    print(f"✓ Grid size: {H}x{W}")
-    
-    # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    backbone_params = sum(p.numel() for p in PhytoNetEdge.backbone_params(model))
+    head_params = sum(p.numel() for p in PhytoNetEdge.head_params(model))
+    
     print(f"\nModel Statistics:")
-    print(f"  Total parameters: {total_params:,}")
-    print(f"  Trainable parameters: {trainable_params:,}")
+    print(f"  Total params:    {total_params:,}")
+    print(f"  Backbone params: {backbone_params:,}")
+    print(f"  Neck+Head params: {head_params:,}")
+    print(f"  Size (FP32):     {total_params * 4 / 1024**2:.2f} MB")
     
-    print("\n" + "="*80)
-    
-    # Test dict output version
-    print("\n2. Testing Dict Output Version...")
-    print("-" * 80)
-    model_dict = HighAccuracyPhytoSparseNetDict(num_classes=2, num_anchors=9)
-    output_dict = model_dict(x)
-    
-    print(f"Input shape: {x.shape}")
-    print(f"Output keys: {output_dict.keys()}")
-    print(f"  pred_boxes shape: {output_dict['pred_boxes'].shape}")
-    print(f"  pred_obj shape: {output_dict['pred_obj'].shape}")
-    print(f"  pred_cls shape: {output_dict['pred_cls'].shape}")
-    
-    # Verify shapes
-    assert output_dict['pred_boxes'].shape == (2, 9*7*7, 4), "Box shape incorrect"
-    assert output_dict['pred_obj'].shape == (2, 9*7*7), "Obj shape incorrect"
-    assert output_dict['pred_cls'].shape == (2, 9*7*7, 2), "Cls shape incorrect"
-    print("✓ Dict output correct!")
-    
-    total_params_dict = sum(p.numel() for p in model_dict.parameters())
-    print(f"\nModel Statistics:")
-    print(f"  Total parameters: {total_params_dict:,}")
-    
-    print("\n" + "="*80)
-    print("Architecture Comparison with Original:")
-    print("-" * 80)
-    
-    # Load original for comparison
-    print("\n3. Loading Original Model for Comparison...")
-    try:
-        from phytonet import HighAccuracyPhytoSparseNet as OriginalModel
-        original_model = OriginalModel(num_classes=2, num_anchors=9)
-        original_params = sum(p.numel() for p in original_model.parameters())
-        
-        increase_factor = total_params / original_params
-        print(f"  Original parameters: {original_params:,}")
-        print(f"  New parameters: {total_params:,}")
-        print(f"  Increase factor: {increase_factor:.2f}x")
-        print(f"  Additional parameters: {total_params - original_params:,}")
-    except Exception as e:
-        print(f"  Could not load original model: {e}")
-        print(f"  New model has {total_params:,} parameters")
-    
-    print("\n" + "="*80)
-    print("Key Improvements:")
-    print("-" * 80)
-    print("✓ C2f blocks with CSP architecture for better gradient flow")
-    print("✓ SPPF for multi-scale spatial feature aggregation")
-    print("✓ CBAM attention (Channel + Spatial) for focus on important features")
-    print("✓ FPN-style neck with feature pyramid for multi-scale detection")
-    print("✓ Deeper backbone (4 stages with more bottlenecks)")
-    print("✓ Wider channels (64→128→256→512→512)")
-    print("✓ 3-4x more parameters for increased model capacity")
-    print("✓ Compatible with existing training pipeline")
-    
-    print("\n" + "="*80)
-    print("Both models working correctly!")
-    print("Use HighAccuracyPhytoSparseNet for your training pipeline.")
-    print("="*80)
+    print("\n✓ All tests passed!") 
