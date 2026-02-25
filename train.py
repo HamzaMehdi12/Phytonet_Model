@@ -477,7 +477,42 @@ def save_detection_image(img_tensor, target, preds, path, class_names, args):
         if isinstance(cls_ids, torch.Tensor):
             cls_ids = cls_ids.numpy()
         
-        # Draw predictions (green)
+        # Colors: stem=blue, tomato=green
+        colors = {0: (255, 100, 100), 1: (100, 255, 100)}
+        
+        # Track used label positions to avoid overlap
+        used_positions = []
+        
+        def find_label_position(x1, y1, x2, y2, tw, th, prefer_top=True):
+            """Find non-overlapping position for label."""
+            candidates = [
+                (x1, y1 - th - 6, x1 + tw, y1),           # Top
+                (x1, y2 + 2, x1 + tw, y2 + th + 8),       # Bottom
+                (x2 + 2, y1, x2 + tw + 4, y1 + th + 4),   # Right
+                (x1 - tw - 4, y1, x1, y1 + th + 4),       # Left
+            ]
+            
+            if not prefer_top:
+                candidates = candidates[::-1]
+            
+            for lx1, ly1, lx2, ly2 in candidates:
+                # Check bounds
+                if lx1 < 0 or ly1 < 0 or lx2 > w or ly2 > h:
+                    continue
+                # Check overlap with existing labels
+                overlap = False
+                for ux1, uy1, ux2, uy2 in used_positions:
+                    if not (lx2 < ux1 or lx1 > ux2 or ly2 < uy1 or ly1 > uy2):
+                        overlap = True
+                        break
+                if not overlap:
+                    used_positions.append((lx1, ly1, lx2, ly2))
+                    return lx1, ly1 + th + 2
+            
+            # Fallback: offset based on index
+            return x1, max(12, y1 - th - 6)
+        
+        # Draw predictions
         for i in range(len(boxes)):
             if float(scores[i]) < args.eval_conf_thresh:
                 continue
@@ -488,12 +523,21 @@ def save_detection_image(img_tensor, target, preds, path, class_names, args):
             if x2 <= x1 or y2 <= y1:
                 continue
             
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            lbl = f"{class_names.get(int(cls_ids[i]), '?')}: {float(scores[i]):.2f}"
-            (tw, th), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            cv2.rectangle(img, (x1, y1 - th - 6), (x1 + tw, y1), (0, 255, 0), -1)
-            cv2.putText(img, lbl, (x1, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 
-                       0.45, (255, 255, 255), 1)
+            cls_id = int(cls_ids[i])
+            color = colors.get(cls_id, (100, 255, 100))
+            
+            # Draw box
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+            
+            # Label
+            lbl = f"{class_names.get(cls_id, '?')}: {float(scores[i]):.2f}"
+            (tw, th), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+            
+            lx, ly = find_label_position(x1, y1, x2, y2, tw + 4, th + 4, prefer_top=True)
+            
+            cv2.rectangle(img, (lx, ly - th - 4), (lx + tw + 2, ly), color, -1)
+            cv2.putText(img, lbl, (lx + 1, ly - 2), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.4, (255, 255, 255), 1, cv2.LINE_AA)
         
         # Draw ground truth (red dashed)
         if target:
@@ -513,11 +557,15 @@ def save_detection_image(img_tensor, target, preds, path, class_names, args):
                     continue
                 
                 draw_dashed_rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                
                 lbl = f"GT:{class_names.get(int(gl[i]), '?')}"
-                (tw, th), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-                cv2.rectangle(img, (x1, y2), (x1 + tw, y2 + th + 6), (0, 0, 255), -1)
-                cv2.putText(img, lbl, (x1, y2 + th), cv2.FONT_HERSHEY_SIMPLEX,
-                           0.45, (255, 255, 255), 1)
+                (tw, th), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                
+                lx, ly = find_label_position(x1, y1, x2, y2, tw + 4, th + 4, prefer_top=False)
+                
+                cv2.rectangle(img, (lx, ly - th - 4), (lx + tw + 2, ly), (0, 0, 255), -1)
+                cv2.putText(img, lbl, (lx + 1, ly - 2), cv2.FONT_HERSHEY_SIMPLEX,
+                           0.4, (255, 255, 255), 1, cv2.LINE_AA)
         
         cv2.imwrite(path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
     except Exception as e:
@@ -725,7 +773,7 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
         for idx_c, cn in class_names.items():
             if idx_c < cm.shape[0]:
                 tp = cm[idx_c, idx_c]
-                fp_c = cm[:, idx_c].sum() - tp + fp_counts.get(idx_c, 0)
+                fp_c = fp_counts.get(idx_c, 0)
                 fn = cm[idx_c, :].sum() - tp
                 
                 pr = tp / (tp + fp_c) if (tp + fp_c) > 0 else 0.
@@ -741,6 +789,11 @@ def validate_model(model, dataloader, device, class_names, args, epoch, phase='v
                 total_fp += fp_c
                 total_fn += fn
         
+        # Calculate overall metrics directly from per-class TP/FP/FN
+        total_tp = sum(val_metrics.get(f'{cn}_tp', 0) for cn in class_names.values())
+        total_fp = sum(val_metrics.get(f'{cn}_fp', 0) for cn in class_names.values())
+        total_fn = sum(val_metrics.get(f'{cn}_fn', 0) for cn in class_names.values())
+
         op = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.
         ore = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.
         of1 = 2 * op * ore / (op + ore) if (op + ore) > 0 else 0.
