@@ -1,14 +1,11 @@
 import os
 import time
 import argparse
-import random
-from PIL import Image
 import matplotlib.pyplot as plt
 import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
 import torch.optim as optim
 import numpy as np
 import cv2
@@ -16,7 +13,6 @@ import math
 import gc
 import seaborn as sns
 import wandb
-import shutil
 import albumentations as A
 
 from sklearn.metrics import confusion_matrix
@@ -1165,6 +1161,24 @@ def main():
         pin_memory=True,
         drop_last=True
     )
+    # Diagnostic: Save a batch of training images with ground truth boxes and class labels
+    diagnostic_dir = os.path.join(args.output_dir, 'diagnostic_gt_images')
+    os.makedirs(diagnostic_dir, exist_ok=True)
+    batch_to_save = next(iter(train_loader))
+    imgs, targets = batch_to_save
+    for b in range(len(imgs)):
+        img = imgs[b].cpu().numpy().transpose(1, 2, 0)
+        img = (img * 255).astype('uint8')
+        gt_boxes = targets[b]['boxes'].cpu().numpy()
+        gt_labels = targets[b]['labels'].cpu().numpy()
+        for i, box in enumerate(gt_boxes):
+            x1, y1, x2, y2 = (box * img.shape[1]).astype(int)
+            label = int(gt_labels[i])
+            color = (0, 255, 0) if label == 0 else (0, 0, 255)
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(img, f"{'stem' if label == 0 else 'tomato'}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        cv2.imwrite(os.path.join(diagnostic_dir, f'batch{b}_gt.png'), img)
+    
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=2)
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=2)
 
