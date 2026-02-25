@@ -1290,7 +1290,19 @@ def main():
             for batch_idx, (imgs, targets) in train_bar:
                 imgs = imgs.to(device)
                 # Prepare targets for loss
-                targets_for_loss = prepare_targets_for_loss(targets, model(imgs).shape, img_size=args.img_size, anchors=args.anchors, num_classes=2)
+                model_output_for_shape = model(imgs)
+                if isinstance(model_output_for_shape, dict):
+                    if 'large' in model_output_for_shape:
+                        output_tensor_shape = model_output_for_shape['large']
+                    elif 'pred_boxes' in model_output_for_shape:
+                        output_tensor_shape = convert_dict_to_tensor(model_output_for_shape, num_classes=2, H=7, W=7)
+                    else:
+                        raise TypeError(f"Dict with unexpected keys: {model_output_for_shape.keys()}")
+                elif isinstance(model_output_for_shape, torch.Tensor):
+                    output_tensor_shape = model_output_for_shape
+                else:
+                    raise TypeError(f"Unexpected model output type: {type(model_output_for_shape)}")
+                targets_for_loss = prepare_targets_for_loss(targets, output_tensor_shape.shape, img_size=args.img_size, anchors=args.anchors, num_classes=2)
                 # Forward pass
                 with autocast(enabled=amp_enabled):
                     model_output = model(imgs)
