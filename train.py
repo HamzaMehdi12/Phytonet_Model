@@ -1168,11 +1168,19 @@ def main():
     imgs, targets = batch_to_save
     for b in range(len(imgs)):
         img = imgs[b].cpu().numpy().transpose(1, 2, 0)
-        img = (img * 255).astype('uint8')
+        img = (img * 255).clip(0, 255).astype('uint8')
+        # Ensure 3 channels for OpenCV
+        if img.shape[2] == 1:
+            img = np.repeat(img, 3, axis=2)
+        elif img.shape[2] == 3:
+            pass
+        else:
+            img = img[..., :3]
         gt_boxes = targets[b]['boxes'].cpu().numpy()
         gt_labels = targets[b]['labels'].cpu().numpy()
+        h, w = img.shape[:2]
         for i, box in enumerate(gt_boxes):
-            x1, y1, x2, y2 = (box * img.shape[1]).astype(int)
+            x1, y1, x2, y2 = (box * np.array([w, h, w, h])).astype(int)
             label = int(gt_labels[i])
             color = (0, 255, 0) if label == 0 else (0, 0, 255)
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
