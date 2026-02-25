@@ -1176,6 +1176,8 @@ def main():
             pass
         else:
             img = img[..., :3]
+        img = np.ascontiguousarray(img)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         gt_boxes = targets[b]['boxes'].cpu().numpy()
         gt_labels = targets[b]['labels'].cpu().numpy()
         h, w = img.shape[:2]
