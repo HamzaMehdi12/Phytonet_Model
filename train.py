@@ -1109,6 +1109,8 @@ def main():
         wandb_logger = setup_wandb(args)
     
 
+
+    print("\n[DEBUG] Loading datasets...")
     train_ds = BotanicalDataset(
         args.train_dir, 
         img_size=args.img_size, 
@@ -1119,19 +1121,28 @@ def main():
     val_ds = BotanicalDataset(args.val_dir, img_size=args.img_size, mode='val')
     test_ds = BotanicalDataset(args.test_dir, img_size=args.img_size, mode='test')
 
+    # Debug: Print class distribution
+    label_counts = {0: 0, 1: 0}
+    for i in range(min(200, len(train_ds))):
+        _, t = train_ds[i]
+        for l in t['labels']:
+            label_counts[int(l)] += 1
+    print(f"[DEBUG] Class distribution in first 200 train samples: stems={label_counts[0]}, tomatoes={label_counts[1]}")
+
     class_weights = calculate_class_weights(train_ds).to(device)
 
-    # Weighted sampling to boost stem-containing images
-    stem_weights = []
+    # Weighted sampling: per-instance for stems (stronger boost)
+    sample_weights = []
     for img_id in train_ds.image_ids:
         anns = train_ds.image_annotations.get(img_id, [])
         stem_count = sum(1 for ann in anns if ann.get("category_id") == 1)
-        # Base weight 1.0, add 2.0 per stem instance
-        stem_weights.append(1.0 + 2.0 * stem_count)
-
+        tomato_count = sum(1 for ann in anns if ann.get("category_id") == 0)
+        # Each stem increases weight by 12x, tomato by 1x
+        weight = 1.0 + 12.0 * stem_count + 1.0 * tomato_count
+        sample_weights.append(weight)
     sampler = WeightedRandomSampler(
-        weights=stem_weights,
-        num_samples=len(stem_weights),
+        weights=sample_weights,
+        num_samples=len(sample_weights),
         replacement=True
     )
     train_loader = DataLoader(
@@ -1153,29 +1164,26 @@ def main():
         model = HighAccuracyPhytoSparseNet(num_classes=2).to(device)
     model_info = log_model_info(model, args.img_size, device, args.output_dir)
 
-    # Test forward pass
+    # Test forward pass and print output shapes
+    print("[DEBUG] Running test forward pass...")
     test_input = torch.randn(1, 3, args.img_size, args.img_size).to(device)
     with torch.no_grad():
         test_output = model(test_input)
-    
-    # Check if model returns dict or tensor
     if isinstance(test_output, dict):
-        print(f"Model output keys: {test_output.keys()}")
+        print(f"[DEBUG] Model output keys: {test_output.keys()}")
         for key, value in test_output.items():
-            print(f"  {key}: {value.shape}")
+            print(f"  [DEBUG] {key}: {value.shape}")
     else:
-        print(f"Model output shape: {test_output.shape}")
+        print(f"[DEBUG] Model output shape: {test_output.shape}")
 
-    # Create loss function with BALANCED STEM BOOST
-    # SCENARIO A+ BALANCED: Aggressive but not overwhelming
-    # Stem weight 6x (down from 8x) - strong but not extreme
+    # Create loss function with STRONG STEM BOOST
     class_weights_tensor = torch.tensor([12.0, 1.0], dtype=torch.float32).to(device)  # stem=12x, tomato=1x
     loss_fn = DetectionLoss(
         alpha=0.25,
         gamma=2.0,
-        lambda_box=8.0,       # Box localization (balanced)
-        lambda_obj=2.0,       # Objectness (balanced)
-        lambda_cls=6.0,       # Classification (BALANCED 8.0→6.0 to prevent gradient conflict)
+        lambda_box=8.0,
+        lambda_obj=2.0,
+        lambda_cls=6.0,
         class_weights=class_weights_tensor,
         num_classes=2,
         anchors=args.anchors,
@@ -1304,9 +1312,22 @@ def main():
                         'image_path': target.get('image_path', '')
                     }
                     device_targets.append(device_target)
+
+                # Debug: Print first batch's targets and anchors
+                if epoch == 1 and batch_idx == 0:
+                    print("[DEBUG] First batch targets:", device_targets)
+                    print("[DEBUG] Anchors:", args.anchors)
+
                 with autocast(enabled=amp_enabled):
                     outputs = model(imgs)
                     pred_dict = prepare_predictions_for_loss(outputs, num_classes=2)
+                    # Debug: Print output shape for first batch
+                    if epoch == 1 and batch_idx == 0:
+                        if isinstance(pred_dict, dict):
+                            for k, v in pred_dict.items():
+                                print(f"[DEBUG] pred_dict[{k}]: {v.shape}")
+                        else:
+                            print(f"[DEBUG] pred_dict shape: {pred_dict.shape}")
                     # If both heads present, compute and sum losses for both
                     if isinstance(pred_dict, dict) and 'large' in pred_dict and 'medium' in pred_dict:
                         # Prepare targets for both heads
@@ -1589,19 +1610,31 @@ def main():
     print(f"mAP: {test_metrics['map']:.4f} | mAP@50: {test_metrics['map_50']:.4f} | mAP@75: {test_metrics['map_75']:.4f}")
     print(f"Precision: {test_metrics['overall_precision']:.4f} | Recall: {test_metrics['overall_recall']:.4f} | F1: {test_metrics['overall_f1']:.4f}")
 
+
     print("\nQuantizing model for edge deployment...")
+    quantized_model_size_mb = None
     try:
         quantized_model = torch.quantization.quantize_dynamic(
             model,
             {nn.Linear, nn.Conv2d},
             dtype=torch.qint8
         )
-        torch.save(quantized_model.state_dict(), os.path.join(args.output_dir, 'quantized_model.pth'))
+        quantized_path = os.path.join(args.output_dir, 'quantized_model.pth')
+        torch.save(quantized_model.state_dict(), quantized_path)
         print("Quantized model saved successfully")
+        # Calculate quantized model size
+        quantized_model_size_mb = os.path.getsize(quantized_path) / (1024 * 1024)
+        print(f"[DEBUG] Quantized model size: {quantized_model_size_mb:.2f} MB")
     except Exception as e:
         print(f"Error during quantization: {e}")
         print("Saving regular model instead")
         torch.save(model.state_dict(), os.path.join(args.output_dir, 'final_model.pth'))
+
+    # Save quantized model size for README.md
+    if quantized_model_size_mb is not None:
+        with open(os.path.join(args.output_dir, 'quantized_model_size.txt'), 'w') as f:
+            f.write(f"Quantized model size: {quantized_model_size_mb:.2f} MB\n")
+        print(f"[INFO] Quantized model size written to quantized_model_size.txt")
     
     metrics_path = os.path.join(args.output_dir, 'metrics', 'training_metrics.json')
     os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
