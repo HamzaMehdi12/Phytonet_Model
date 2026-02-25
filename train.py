@@ -1265,185 +1265,70 @@ def main():
             print("Starting from epoch 1")
             start_epoch = 1
     
+
     try:
         scaler = GradScaler(enabled=amp_enabled, init_scale=2.**12)  # 4096 - reduce overflow
         for epoch in range(start_epoch, args.epochs + 1):
             epoch_start = time.time()
-            # Update dataset with current epoch for mosaic scheduling
             train_ds.current_epoch = epoch
-            # WARMUP: Gradually increase LR for first 3 epochs (EXPONENTIAL - prevents loss spikes)
+            # Warmup LR for first 3 epochs
             if epoch <= 3:
-                # Exponential warmup: e^(2*epoch/3) gives smoother ramp-up
-                warmup_factor = (2.718 ** (2.0 * epoch / 3.0)) / (2.718 ** 2.0)  # maps to [0.135, 1.0]
-                warmup_factor = max(0.1, min(1.0, warmup_factor))  # clamp to [0.1, 1.0]
+                warmup_factor = (2.718 ** (2.0 * epoch / 3.0)) / (2.718 ** 2.0)
+                warmup_factor = max(0.1, min(1.0, warmup_factor))
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = args.lr * warmup_factor
                 print(f"Exponential Warmup: LR = {args.lr * warmup_factor:.6f} (factor={warmup_factor:.3f})")
-                with torch.no_grad():
-                    for idx, (imgs, targets) in enumerate(dataloader):
-                        imgs = imgs.to(device)
-                        model_output = model(imgs)
-                        # Handle multi-scale dict output
-                        if isinstance(model_output, dict):
-                            if 'large' in model_output:
-                                output_tensor = model_output['large']
-                            elif 'pred_boxes' in model_output:
-                                output_tensor = convert_dict_to_tensor(
-                                    model_output,
-                                    num_classes=2,
-                                    H=7,
-                                    W=7
-                                )
-                            else:
-                                print(f"Unexpected dict keys: {model_output.keys()}")
-                                continue
-                        elif isinstance(model_output, torch.Tensor):
-                            output_tensor = model_output
-                        else:
-                            print(f"Unexpected model output type: {type(model_output)}")
-                            continue
 
-                        batch_size = imgs.shape[0]
-                        for b in range(batch_size):
-                            if output_tensor.dim() == 4:
-                                single_output = output_tensor[b]
-                            else:
-                                single_output = output_tensor
-                            boxes, scores, class_ids = decode_predictions_advanced(
-                                single_output,
-                                conf_thresh=args.eval_conf_thresh,
-                                iou_thresh=args.iou_thresh,
-                                anchors=args.anchors,
-                                img_size=args.img_size,
-                                max_detections=300,
-                                use_class_thresholds=False,
-                                box_scale=args.box_scale
-                            )
-                            boxes = boxes.cpu()
-                            scores = scores.cpu()
-                            class_ids = class_ids.cpu()
-                            gt_boxes = targets[b]['boxes'].cpu()
-                            gt_labels = targets[b]['labels'].cpu()
+            model.train()
+            epoch_loss = 0.0
+            epoch_obj = 0.0
+            epoch_cls = 0.0
+            epoch_box = 0.0
+            num_batches = len(train_loader)
+            train_bar = tqdm(enumerate(train_loader), total=num_batches, desc=f"Epoch {epoch}")
+            optimizer.zero_grad()
+            for batch_idx, (imgs, targets) in train_bar:
+                imgs = imgs.to(device)
+                # Prepare targets for loss
+                targets_for_loss = prepare_targets_for_loss(targets, model(imgs).shape, img_size=args.img_size, anchors=args.anchors, num_classes=2)
+                # Forward pass
+                with autocast(enabled=amp_enabled):
+                    model_output = model(imgs)
+                    preds_for_loss = prepare_predictions_for_loss(model_output, num_classes=2)
+                    loss, obj_loss, cls_loss, box_loss = loss_fn(preds_for_loss, targets_for_loss)
 
-                            # --- Deep-dive debug: Print predictions and targets for first batch ---
-                            if not debug_printed and phase == 'val':
-                                print("[DEBUG][Val] GT labels:", gt_labels.tolist())
-                                print("[DEBUG][Val] Predicted classes:", class_ids.tolist())
-                                print("[DEBUG][Val] Predicted scores:", scores.tolist())
-                                print("[DEBUG][Val] Predicted boxes (first 5):", boxes[:5].tolist())
-                                print(f"[DEBUG][Val] #Predicted stems: {(class_ids==0).sum().item()}, #Predicted tomatoes: {(class_ids==1).sum().item()}")
-                                debug_printed = True
-
-                            # --- Activation stats for first batch ---
-                            if not debug_printed and phase == 'val':
-                                if isinstance(single_output, torch.Tensor):
-                                    print_activation_stats(single_output, 'model_output')
-
-                            # --- Continue with metric calculation ---
-                            if len(boxes) == 0:
-                                boxes = torch.empty((0, 4))
-                                scores = torch.empty((0,))
-                                class_ids = torch.empty((0,), dtype=torch.int64)
-                            preds = [{
-                                "boxes": boxes, 
-                                "scores": scores, 
-                                "labels": class_ids
-                            }]
-                            targets_dict = [{
-                                "boxes": gt_boxes, 
-                                "labels": gt_labels
-                            }]
-                            try:
-                                map_metric.update(preds, targets_dict)
-                            except Exception as e:
-                                print(f"Error updating metrics: {e}")
-                                continue
-
-                            # IoU-based matching for confusion matrix
-                            if len(boxes) > 0 and len(gt_boxes) > 0:
-                                from torchvision.ops import box_iou
-                                ious = box_iou(boxes, gt_boxes)
-                                matched_preds = set()
-                                for gt_idx in range(len(gt_boxes)):
-                                    gt_label = gt_labels[gt_idx].item()
-                                    best_iou, best_pred_idx = ious[:, gt_idx].max(dim=0)
-                                    if best_iou > 0.5:
-                                        pred_label = class_ids[best_pred_idx].item()
-                                        all_true_labels.append(gt_label)
-                                        all_pred_labels.append(pred_label)
-                                        matched_preds.add(best_pred_idx.item())
-                                for pred_idx in range(len(boxes)):
-                                    if pred_idx not in matched_preds:
-                                        pred_label = class_ids[pred_idx].item()
-                                        all_pred_labels.append(pred_label)
-                                        all_true_labels.append(-1)
-                            elif len(gt_boxes) == 0 and len(boxes) > 0:
-                                for pred_label in class_ids:
-                                    all_pred_labels.append(pred_label.item())
-                                    all_true_labels.append(-1)
-
-                            # Save detection image for first batch
-                            if idx == 0 and phase == 'val':
-                                save_detection_image(
-                                    imgs[0].cpu(), 
-                                    {
-                                        'boxes': gt_boxes,
-                                        'labels': gt_labels,
-                                        'image_path': targets[0].get('image_path', '')
-                                    },
-                                    (boxes, scores, class_ids),
-                                    os.path.join(args.output_dir, 'detections', phase, f'epoch_{epoch}.jpg'),
-                                    class_names,
-                                    conf_thresh=args.eval_conf_thresh,
-                                    img_size=args.img_size
-                                )
                 if torch.isnan(loss).any() or torch.isinf(loss).any():
                     print(f"Invalid loss detected in batch {batch_idx}, skipping")
                     optimizer.zero_grad()
                     continue
 
                 scaled_loss = loss / args.accumulate
-
-
                 if amp_enabled:
                     scaler.scale(scaled_loss).backward()
                 else:
                     scaled_loss.backward()
-                    
+
                 epoch_loss += loss.item()
                 epoch_obj += obj_loss.item()
                 epoch_cls += cls_loss.item()
                 epoch_box += box_loss.item()
 
-                avg_loss = epoch_loss / (batch_idx + 1)
-                train_bar.set_postfix({
-                    'loss': f'{avg_loss:.3f}',
-                    'obj': f'{epoch_obj/(batch_idx+1):.3f}',
-                    'cls': f'{epoch_cls/(batch_idx+1):.3f}',
-                    'box': f'{epoch_box/(batch_idx+1):.3f}',
-                    'lr': f'{optimizer.param_groups[0]["lr"]:.1e}'
-                })
-
                 if (batch_idx + 1) % args.accumulate == 0:
                     if amp_enabled:
                         scaler.unscale_(optimizer)
-
                     has_bad_grads, grad_norm = stabilize_gradients(model, max_norm=1.0, debug=False)
-
                     if has_bad_grads:
                         print(f"WARNING: Invalid gradients detected in batch {batch_idx}, zeroing them out")
                         optimizer.zero_grad()
                         if amp_enabled:
                             scaler.update()
                         continue
-
                     if math.isnan(grad_norm) or math.isinf(grad_norm):
                         print(f"Invalid gradient norm detected in batch {batch_idx}, zeroing gradients")
                         optimizer.zero_grad()
                         if amp_enabled:
                             scaler.update()
                         continue
-                        
                     if amp_enabled:
                         scaler.step(optimizer)
                         scaler.update()
@@ -1456,34 +1341,40 @@ def main():
                             for ema_param, param in zip(ema_model.parameters(), model.parameters()):
                                 ema_param.data.mul_(ema_decay).add_(param.data, alpha=1 - ema_decay)
                     optimizer.zero_grad()
-                    
-            # Only step scheduler after warmup epochs
+
+                avg_loss = epoch_loss / (batch_idx + 1)
+                train_bar.set_postfix({
+                    'loss': f'{avg_loss:.3f}',
+                    'obj': f'{epoch_obj/(batch_idx+1):.3f}',
+                    'cls': f'{epoch_cls/(batch_idx+1):.3f}',
+                    'box': f'{epoch_box/(batch_idx+1):.3f}',
+                    'lr': f'{optimizer.param_groups[0]["lr"]:.1e}'
+                })
+
             if epoch > 3:
                 try:
                     scheduler.step()
                 except Exception as e:
                     print("Error in scheduler step!")
                     raise Exception(e)
-            
-            num_batches = len(train_loader)
+
             avg_loss = epoch_loss / num_batches
             avg_obj = epoch_obj / num_batches
             avg_cls = epoch_cls / num_batches
             avg_box = epoch_box / num_batches
-            
             train_loss_history.append(avg_loss)
-            
+
             print(f"\nEpoch {epoch} Training Summary ({time.time()-epoch_start:.1f}s)")
             print(f"Total Loss: {avg_loss:.4f} | Obj: {avg_obj:.4f} | Cls: {avg_cls:.4f} | Box: {avg_box:.4f}")
             print(f"LR: {optimizer.param_groups[0]['lr']:.7f}")
 
             val_metrics = validate_model(ema_model, val_loader, device, class_names, args, epoch, 'val')
             val_metrics_history.append(val_metrics)
-            
+
             print(f"\nValidation @ Epoch {epoch}")
             print(f"mAP: {val_metrics['map']:.4f} | mAP@50: {val_metrics['map_50']:.4f} | mAP@75: {val_metrics['map_75']:.4f}")
             print(f"Precision: {val_metrics['overall_precision']:.4f} | Recall: {val_metrics['overall_recall']:.4f} | F1: {val_metrics['overall_f1']:.4f}")
-                        
+
             if args.use_wandb:
                 log_data = {
                     'epoch': epoch,
@@ -1499,24 +1390,21 @@ def main():
                     'val/recall': val_metrics['overall_recall'],
                     'val/f1': val_metrics['overall_f1'],
                 }
-                
                 for cls_name in class_names.values():
                     log_data[f'val/{cls_name}_precision'] = val_metrics[f'{cls_name}_precision']
                     log_data[f'val/{cls_name}_recall'] = val_metrics[f'{cls_name}_recall']
                     log_data[f'val/{cls_name}_f1'] = val_metrics[f'{cls_name}_f1']
-                
                 wandb.log(log_data)
-            
+
             if val_metrics['map_50'] > best_map50:
                 best_map50 = val_metrics['map_50']
                 best_epoch = epoch
                 patience_counter = 0
-                
                 torch.save(model.state_dict(), os.path.join(args.output_dir, 'best_model.pth'))
                 print(f"Saved new best model at epoch {epoch} with mAP@50: {val_metrics['map_50']:.4f}")
             else:
                 patience_counter += 1
-            
+
             if epoch % 5 == 0 or epoch == args.epochs:
                 ckpt_path = os.path.join(args.output_dir, 'checkpoints', f'epoch_{epoch}.pth')
                 torch.save({
@@ -1528,13 +1416,12 @@ def main():
                     'metrics': val_metrics,
                     'best_map50': best_map50,
                 }, ckpt_path)
-
                 print(f"Saved checkpoint at epoch {epoch}")
-            
+
             if patience_counter >= args.patience:
                 print(f"Early stopping triggered at epoch {epoch}")
                 break
-            
+
             torch.cuda.empty_cache()
             gc.collect()
             print(f"{'-'*60}")
