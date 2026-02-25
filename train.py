@@ -1302,7 +1302,11 @@ def main():
                     output_tensor_shape = model_output_for_shape
                 else:
                     raise TypeError(f"Unexpected model output type: {type(model_output_for_shape)}")
+                # Move all target tensors to the same device as imgs/model
                 targets_for_loss = prepare_targets_for_loss(targets, output_tensor_shape.shape, img_size=args.img_size, anchors=args.anchors, num_classes=2)
+                for k in targets_for_loss:
+                    if isinstance(targets_for_loss[k], torch.Tensor):
+                        targets_for_loss[k] = targets_for_loss[k].to(imgs.device)
                 # Forward pass
 
                 with autocast(enabled=amp_enabled):
