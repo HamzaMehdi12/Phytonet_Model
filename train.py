@@ -917,8 +917,10 @@ def main():
                     max_lr=[base_lr * 0.1, base_lr * 4.0],  # [backbone, heads]
                     epochs=args.epochs,
                     steps_per_epoch=len(train_loader),
-                    pct_start=0.1,  # 10% warmup
-                    anneal_strategy='cos'
+                    pct_start=0.05,  # 10% warmup
+                    anneal_strategy='cos',
+                    div_factor=2,
+                    final_div_factor=100
                 )
     
     amp_enabled = args.amp and torch.cuda.is_available()
