@@ -1048,44 +1048,7 @@ def adjust_weights(epoch, loss_fn, conf_thresh, device):
     return loss_fn
 
 def main():
-        # --- Deep-dive debug: Print model output activations for first batch ---
-        def print_activation_stats(tensor, name):
-            if hasattr(tensor, 'detach'):
-                t = tensor.detach().cpu()
-                print(f"[DEBUG][Activations] {name}: min={t.min():.3f}, max={t.max():.3f}, mean={t.mean():.3f}, std={t.std():.3f}")
 
-        debug_printed = False
-        parser = argparse.ArgumentParser(description='Advanced Detection Training')
-        parser.add_argument('--train_dir', default='data_t/train', help='Training dataset directory')
-        parser.add_argument('--val_dir', default='data_t/valid', help='Validation dataset directory')
-        parser.add_argument('--test_dir', default='data_t/test', help='Test dataset directory')
-        parser.add_argument('--epochs', type=int, default=300, help='Training epochs')
-        parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
-        parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (BALANCED 1e-3 - faster convergence, not too aggressive)')
-        parser.add_argument('--img_size', type=int, default=224, help='Image Size')
-        parser.add_argument('--model', type=str, default='base', choices=['base', 'strong'], help='Model variant')
-        parser.add_argument('--box_scale', type=float, default=1.3, help='Box scale (increase to correct under-sized boxes)')
-        parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
-        parser.add_argument('--eval_conf_thresh', type=float, default=0.25, help='Eval Confidence Threshold (set to 0.25 for evaluation)')
-        parser.add_argument('--iou_thresh', type=float, default=0.35, help='IOU Threshold (LOWERED 0.45→0.35 for maximum NMS suppression)')
-        parser.add_argument('--output_dir', default='weights', help='Output directory')
-        parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
-        parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
-        parser.add_argument('--accumulate', type=int, default=2, help='Gradient accumulation steps (REDUCED for faster updates)')
-        parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases for logging')
-
-        args = parser.parse_args()
-    
-        # CRITICAL: Print actual arguments being used
-        print(f"\n{'='*60}")
-        print(f"TRAINING CONFIGURATION (BALANCED SCENARIO A+)")
-        print(f"{'='*60}")
-        print(f"Learning Rate: {args.lr:.2e} (BALANCED 1e-3)")
-        print(f"Batch Size: {args.batch_size}")
-        print(f"Image Size: {args.img_size}")
-        print(f"Model Variant: {args.model}")
-        print(f"Box Scale: {args.box_scale}")
-            debug_printed = False
     parser = argparse.ArgumentParser(description='Advanced Detection Training')
     parser.add_argument('--train_dir', default='data_t/train', help='Training dataset directory')
     parser.add_argument('--val_dir', default='data_t/valid', help='Validation dataset directory')
@@ -1104,6 +1067,18 @@ def main():
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
     parser.add_argument('--accumulate', type=int, default=2, help='Gradient accumulation steps (REDUCED for faster updates)')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases for logging')
+
+    args = parser.parse_args()
+
+    # CRITICAL: Print actual arguments being used
+    print(f"\n{'='*60}")
+    print(f"TRAINING CONFIGURATION (BALANCED SCENARIO A+)")
+    print(f"{'='*60}")
+    print(f"Learning Rate: {args.lr:.2e} (BALANCED 1e-3)")
+    print(f"Batch Size: {args.batch_size}")
+    print(f"Image Size: {args.img_size}")
+    print(f"Model Variant: {args.model}")
+    print(f"Box Scale: {args.box_scale}")
 
     args = parser.parse_args()
     
