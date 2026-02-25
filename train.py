@@ -1376,37 +1376,12 @@ def main():
                         scaler.step(optimizer)
                         scaler.update()
                         did_step = True
-                    else:
-                        optimizer.step()
-                        did_step = True
-                    if did_step:
-                        with torch.no_grad():
-                            for ema_param, param in zip(ema_model.parameters(), model.parameters()):
-                                ema_param.data.mul_(ema_decay).add_(param.data, alpha=1 - ema_decay)
-                    optimizer.zero_grad()
-
-                avg_loss = epoch_loss / (batch_idx + 1)
-                train_bar.set_postfix({
-                    'loss': f'{avg_loss:.3f}',
-                    'obj': f'{epoch_obj/(batch_idx+1):.3f}',
-                    'cls': f'{epoch_cls/(batch_idx+1):.3f}',
-                    'box': f'{epoch_box/(batch_idx+1):.3f}',
-                    'lr': f'{optimizer.param_groups[0]["lr"]:.1e}'
-                })
-
-            if epoch > 3:
-                try:
-                    scheduler.step()
-                except Exception as e:
-                    print("Error in scheduler step!")
-                    raise Exception(e)
-
-            avg_loss = epoch_loss / num_batches
-            avg_obj = epoch_obj / num_batches
             avg_cls = epoch_cls / num_batches
             avg_box = epoch_box / num_batches
             train_loss_history.append(avg_loss)
 
+            avg_loss = epoch_loss / num_batches
+            avg_obj = epoch_obj / num_batches
             print(f"\nEpoch {epoch} Training Summary ({time.time()-epoch_start:.1f}s)")
             print(f"Total Loss: {avg_loss:.4f} | Obj: {avg_obj:.4f} | Cls: {avg_cls:.4f} | Box: {avg_box:.4f}")
             print(f"LR: {optimizer.param_groups[0]['lr']:.7f}")
