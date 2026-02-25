@@ -74,20 +74,15 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
     for b in range(batch_size):
         gt_boxes = raw_targets[b]['boxes']
         gt_labels = raw_targets[b]['labels']
-        
         if len(gt_boxes) == 0:
             continue
-        
         gt_cx = (gt_boxes[:, 0] + gt_boxes[:, 2]) / 2.0
         gt_cy = (gt_boxes[:, 1] + gt_boxes[:, 3]) / 2.0
         gt_w = gt_boxes[:, 2] - gt_boxes[:, 0]
         gt_h = gt_boxes[:, 3] - gt_boxes[:, 1]
-        
         grid_x = (gt_cx * W).long().clamp(0, W-1)
         grid_y = (gt_cy * H).long().clamp(0, H-1)
-        
         anchors_norm = anchors_t / float(grid_img_size)
-        
         for i, (gx, gy, gw, gh, label) in enumerate(zip(grid_x, grid_y, gt_w, gt_h, gt_labels)):
             anchor_ious = []
             for anchor in anchors_norm:
@@ -98,6 +93,9 @@ def prepare_targets_for_loss(raw_targets, model_output_shape, img_size=224,
                 union = gw * gh + aw * ah - inter
                 iou = inter / (union + 1e-6)
                 anchor_ious.append(iou.item())
+            # Debug: Print anchor IoUs for first batch/first GT
+            if b == 0 and i == 0:
+                print(f"[DEBUG][TargetAssign] GT label: {int(label)}, Anchor IoUs: {[round(x,3) for x in anchor_ious]}")
             
             anchor_ious = torch.tensor(anchor_ious, device=device)
             
@@ -1050,6 +1048,44 @@ def adjust_weights(epoch, loss_fn, conf_thresh, device):
     return loss_fn
 
 def main():
+        # --- Deep-dive debug: Print model output activations for first batch ---
+        def print_activation_stats(tensor, name):
+            if hasattr(tensor, 'detach'):
+                t = tensor.detach().cpu()
+                print(f"[DEBUG][Activations] {name}: min={t.min():.3f}, max={t.max():.3f}, mean={t.mean():.3f}, std={t.std():.3f}")
+
+        debug_printed = False
+        parser = argparse.ArgumentParser(description='Advanced Detection Training')
+        parser.add_argument('--train_dir', default='data_t/train', help='Training dataset directory')
+        parser.add_argument('--val_dir', default='data_t/valid', help='Validation dataset directory')
+        parser.add_argument('--test_dir', default='data_t/test', help='Test dataset directory')
+        parser.add_argument('--epochs', type=int, default=300, help='Training epochs')
+        parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
+        parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (BALANCED 1e-3 - faster convergence, not too aggressive)')
+        parser.add_argument('--img_size', type=int, default=224, help='Image Size')
+        parser.add_argument('--model', type=str, default='base', choices=['base', 'strong'], help='Model variant')
+        parser.add_argument('--box_scale', type=float, default=1.3, help='Box scale (increase to correct under-sized boxes)')
+        parser.add_argument('--conf_thresh', type=float, default=0.35, help='Confidence Threshold (RAISED 0.25→0.35 to filter weak predictions)')
+        parser.add_argument('--eval_conf_thresh', type=float, default=0.25, help='Eval Confidence Threshold (set to 0.25 for evaluation)')
+        parser.add_argument('--iou_thresh', type=float, default=0.35, help='IOU Threshold (LOWERED 0.45→0.35 for maximum NMS suppression)')
+        parser.add_argument('--output_dir', default='weights', help='Output directory')
+        parser.add_argument('--amp', action='store_true', help='Enable Automatic Mixed Precision')
+        parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
+        parser.add_argument('--accumulate', type=int, default=2, help='Gradient accumulation steps (REDUCED for faster updates)')
+        parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases for logging')
+
+        args = parser.parse_args()
+    
+        # CRITICAL: Print actual arguments being used
+        print(f"\n{'='*60}")
+        print(f"TRAINING CONFIGURATION (BALANCED SCENARIO A+)")
+        print(f"{'='*60}")
+        print(f"Learning Rate: {args.lr:.2e} (BALANCED 1e-3)")
+        print(f"Batch Size: {args.batch_size}")
+        print(f"Image Size: {args.img_size}")
+        print(f"Model Variant: {args.model}")
+        print(f"Box Scale: {args.box_scale}")
+            debug_printed = False
     parser = argparse.ArgumentParser(description='Advanced Detection Training')
     parser.add_argument('--train_dir', default='data_t/train', help='Training dataset directory')
     parser.add_argument('--val_dir', default='data_t/valid', help='Validation dataset directory')
@@ -1268,125 +1304,124 @@ def main():
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = args.lr * warmup_factor
                 print(f"Exponential Warmup: LR = {args.lr * warmup_factor:.6f} (factor={warmup_factor:.3f})")
-                # Integrate warmup with scheduler if supported
-                try:
-                    scheduler.step(epoch)
-                except TypeError:
-                    # If scheduler does not accept epoch argument, skip during warmup
-                    pass
-            loss_fn = adjust_weights(epoch, loss_fn, args.conf_thresh, device)
-            model.train()
-            epoch_loss = 0.0
-            epoch_obj = 0.0
-            epoch_cls = 0.0
-            epoch_box = 0.0
-            train_bar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")
-            optimizer.zero_grad()
-
-            last_layer_name = None
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    last_layer_name = name
-            for batch_idx, (imgs, targets) in enumerate(train_bar):
-                # Multi-scale training - randomly resize images every 10 batches
-                if batch_idx % 10 == 0:
-                    # Random size between 0.8x to 1.2x of base img_size
-                    scale_factor = random.uniform(0.8, 1.2)
-                    current_size = int(args.img_size * scale_factor)
-                    # Ensure divisible by 32 for proper feature map sizes
-                    current_size = max(192, min(320, (current_size // 32) * 32))
-                else:
-                    current_size = args.img_size
-
-                # Resize if needed
-                if current_size != imgs.shape[-1]:
-                    imgs = F.interpolate(imgs, size=current_size, mode='bilinear', align_corners=False)
-
-                imgs = imgs.to(device, non_blocking=True)
-
-                device_targets = []
-                for target in targets:
-                    device_target = {
-                        'boxes': target['boxes'].to(device),
-                        'labels': target['labels'].to(device),
-                        'image_path': target.get('image_path', '')
-                    }
-                    device_targets.append(device_target)
-
-                # Debug: Print first batch's targets and anchors
-                if epoch == 1 and batch_idx == 0:
-                    print("[DEBUG] First batch targets:", device_targets)
-                    print("[DEBUG] Anchors:", args.anchors)
-
-                with autocast(enabled=amp_enabled):
-                    outputs = model(imgs)
-                    pred_dict = prepare_predictions_for_loss(outputs, num_classes=2)
-                    # Debug: Print output shape for first batch
-                    if epoch == 1 and batch_idx == 0:
-                        def print_shape_recursive(d, prefix="pred_dict"):
-                            if isinstance(d, dict):
-                                for kk, vv in d.items():
-                                    print_shape_recursive(vv, prefix=f"{prefix}[{kk}]")
-                            elif hasattr(d, 'shape'):
-                                print(f"[DEBUG] {prefix}: {tuple(d.shape)}")
+                with torch.no_grad():
+                    for idx, (imgs, targets) in enumerate(dataloader):
+                        imgs = imgs.to(device)
+                        model_output = model(imgs)
+                        # Handle multi-scale dict output
+                        if isinstance(model_output, dict):
+                            if 'large' in model_output:
+                                output_tensor = model_output['large']
+                            elif 'pred_boxes' in model_output:
+                                output_tensor = convert_dict_to_tensor(
+                                    model_output,
+                                    num_classes=2,
+                                    H=7,
+                                    W=7
+                                )
                             else:
-                                print(f"[DEBUG] {prefix}: type={type(d)}")
-                        print_shape_recursive(pred_dict)
-                    # If both heads present, compute and sum losses for both
-                    if isinstance(pred_dict, dict) and 'large' in pred_dict and 'medium' in pred_dict:
-                        # Prepare targets for both heads
-                        # Large head: 7x7 grid
-                        output_shape_large = outputs['large'].shape
-                        target_dict_large = prepare_targets_for_loss(
-                            device_targets,
-                            output_shape_large,
-                            img_size=current_size,
-                            anchors=args.anchors,
-                            num_classes=2
-                        )
-                        # Medium head: 14x14 grid
-                        output_shape_medium = outputs['medium'].shape
-                        target_dict_medium = prepare_targets_for_loss(
-                            device_targets,
-                            output_shape_medium,
-                            img_size=current_size,
-                            anchors=args.anchors,
-                            num_classes=2
-                        )
-                        loss_fn.img_size = current_size
-                        loss_fn.box_scale = args.box_scale
-                        loss_large, cls_loss_large, obj_loss_large, box_loss_large = loss_fn(pred_dict['large'], target_dict_large)
-                        loss_medium, cls_loss_medium, obj_loss_medium, box_loss_medium = loss_fn(pred_dict['medium'], target_dict_medium)
-                        # Sum losses
-                        loss = loss_large + loss_medium
-                        cls_loss = cls_loss_large + cls_loss_medium
-                        obj_loss = obj_loss_large + obj_loss_medium
-                        box_loss = box_loss_large + box_loss_medium
-                    else:
-                        # Single head fallback
-                        if isinstance(outputs, dict):
-                            batch_size = pred_dict['pred_boxes'].shape[0]
-                            num_cells = pred_dict['pred_boxes'].shape[1]
-                            num_anchors = len(args.anchors)
-                            num_classes = 2
-                            if num_cells % num_anchors != 0:
-                                raise ValueError(f"num_cells ({num_cells}) not divisible by num_anchors ({num_anchors})")
-                            HW = num_cells // num_anchors
-                            H = W = int(HW ** 0.5)
-                            output_shape = (batch_size, num_anchors * (5 + num_classes), H, W)
+                                print(f"Unexpected dict keys: {model_output.keys()}")
+                                continue
+                        elif isinstance(model_output, torch.Tensor):
+                            output_tensor = model_output
                         else:
-                            output_shape = outputs.shape
-                        loss_fn.img_size = current_size
-                        loss_fn.box_scale = args.box_scale
-                        target_dict = prepare_targets_for_loss(
-                            device_targets,
-                            output_shape,
-                            img_size=current_size,
-                            anchors=args.anchors,
-                            num_classes=2
-                        )
-                        loss, cls_loss, obj_loss, box_loss = loss_fn(pred_dict, target_dict)
+                            print(f"Unexpected model output type: {type(model_output)}")
+                            continue
 
+                        batch_size = imgs.shape[0]
+                        for b in range(batch_size):
+                            if output_tensor.dim() == 4:
+                                single_output = output_tensor[b]
+                            else:
+                                single_output = output_tensor
+                            boxes, scores, class_ids = decode_predictions_advanced(
+                                single_output,
+                                conf_thresh=args.eval_conf_thresh,
+                                iou_thresh=args.iou_thresh,
+                                anchors=args.anchors,
+                                img_size=args.img_size,
+                                max_detections=300,
+                                use_class_thresholds=False,
+                                box_scale=args.box_scale
+                            )
+                            boxes = boxes.cpu()
+                            scores = scores.cpu()
+                            class_ids = class_ids.cpu()
+                            gt_boxes = targets[b]['boxes'].cpu()
+                            gt_labels = targets[b]['labels'].cpu()
+
+                            # --- Deep-dive debug: Print predictions and targets for first batch ---
+                            if not debug_printed and phase == 'val':
+                                print("[DEBUG][Val] GT labels:", gt_labels.tolist())
+                                print("[DEBUG][Val] Predicted classes:", class_ids.tolist())
+                                print("[DEBUG][Val] Predicted scores:", scores.tolist())
+                                print("[DEBUG][Val] Predicted boxes (first 5):", boxes[:5].tolist())
+                                print(f"[DEBUG][Val] #Predicted stems: {(class_ids==0).sum().item()}, #Predicted tomatoes: {(class_ids==1).sum().item()}")
+                                debug_printed = True
+
+                            # --- Activation stats for first batch ---
+                            if not debug_printed and phase == 'val':
+                                if isinstance(single_output, torch.Tensor):
+                                    print_activation_stats(single_output, 'model_output')
+
+                            # --- Continue with metric calculation ---
+                            if len(boxes) == 0:
+                                boxes = torch.empty((0, 4))
+                                scores = torch.empty((0,))
+                                class_ids = torch.empty((0,), dtype=torch.int64)
+                            preds = [{
+                                "boxes": boxes, 
+                                "scores": scores, 
+                                "labels": class_ids
+                            }]
+                            targets_dict = [{
+                                "boxes": gt_boxes, 
+                                "labels": gt_labels
+                            }]
+                            try:
+                                map_metric.update(preds, targets_dict)
+                            except Exception as e:
+                                print(f"Error updating metrics: {e}")
+                                continue
+
+                            # IoU-based matching for confusion matrix
+                            if len(boxes) > 0 and len(gt_boxes) > 0:
+                                from torchvision.ops import box_iou
+                                ious = box_iou(boxes, gt_boxes)
+                                matched_preds = set()
+                                for gt_idx in range(len(gt_boxes)):
+                                    gt_label = gt_labels[gt_idx].item()
+                                    best_iou, best_pred_idx = ious[:, gt_idx].max(dim=0)
+                                    if best_iou > 0.5:
+                                        pred_label = class_ids[best_pred_idx].item()
+                                        all_true_labels.append(gt_label)
+                                        all_pred_labels.append(pred_label)
+                                        matched_preds.add(best_pred_idx.item())
+                                for pred_idx in range(len(boxes)):
+                                    if pred_idx not in matched_preds:
+                                        pred_label = class_ids[pred_idx].item()
+                                        all_pred_labels.append(pred_label)
+                                        all_true_labels.append(-1)
+                            elif len(gt_boxes) == 0 and len(boxes) > 0:
+                                for pred_label in class_ids:
+                                    all_pred_labels.append(pred_label.item())
+                                    all_true_labels.append(-1)
+
+                            # Save detection image for first batch
+                            if idx == 0 and phase == 'val':
+                                save_detection_image(
+                                    imgs[0].cpu(), 
+                                    {
+                                        'boxes': gt_boxes,
+                                        'labels': gt_labels,
+                                        'image_path': targets[0].get('image_path', '')
+                                    },
+                                    (boxes, scores, class_ids),
+                                    os.path.join(args.output_dir, 'detections', phase, f'epoch_{epoch}.jpg'),
+                                    class_names,
+                                    conf_thresh=args.eval_conf_thresh,
+                                    img_size=args.img_size
+                                )
                 if torch.isnan(loss).any() or torch.isinf(loss).any():
                     print(f"Invalid loss detected in batch {batch_idx}, skipping")
                     optimizer.zero_grad()
