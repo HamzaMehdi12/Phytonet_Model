@@ -1323,11 +1323,15 @@ def main():
                     pred_dict = prepare_predictions_for_loss(outputs, num_classes=2)
                     # Debug: Print output shape for first batch
                     if epoch == 1 and batch_idx == 0:
-                        if isinstance(pred_dict, dict):
-                            for k, v in pred_dict.items():
-                                print(f"[DEBUG] pred_dict[{k}]: {v.shape}")
-                        else:
-                            print(f"[DEBUG] pred_dict shape: {pred_dict.shape}")
+                        def print_shape_recursive(d, prefix="pred_dict"):
+                            if isinstance(d, dict):
+                                for kk, vv in d.items():
+                                    print_shape_recursive(vv, prefix=f"{prefix}[{kk}]")
+                            elif hasattr(d, 'shape'):
+                                print(f"[DEBUG] {prefix}: {tuple(d.shape)}")
+                            else:
+                                print(f"[DEBUG] {prefix}: type={type(d)}")
+                        print_shape_recursive(pred_dict)
                     # If both heads present, compute and sum losses for both
                     if isinstance(pred_dict, dict) and 'large' in pred_dict and 'medium' in pred_dict:
                         # Prepare targets for both heads
