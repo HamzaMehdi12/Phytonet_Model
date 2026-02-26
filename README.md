@@ -1,4 +1,4 @@
-# 🍅 High-Accuracy Botanical Object Detection System
+# 🍅 HighPhytoSparseNet: A Lightweight Multi-Head Object Detection Model for Edge-Based Agricultural Applications
 
 > **Advanced deep learning pipeline for automated tomato and stem detection in agricultural environments, optimized for edge deployment.**
 
