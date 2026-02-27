@@ -3,15 +3,11 @@
 > **Advanced deep learning pipeline for automated tomato and stem detection in agricultural environments, optimized for edge deployment.**
 
 ### 🏷️ Project Badges
-![Python](https://img.shields.io/badge/Python-3.11-blue)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0.0-red)
-![CUDA](https://img.shields.io/badge/CUDA-11.8-orange)
-![Dataset](https://img.shields.io/badge/Dataset-Tomato_d%203000--images-lightgrey)
-![License](https://img.shields.io/badge/License-MIT-yellow)
-![Status](https://img.shields.io/badge/Status-Active%20Training-brightgreen)
-![mAP@50](https://img.shields.io/badge/mAP@50-Improving-blue)
-![Inference](https://img.shields.io/badge/Inference-4--5ms-blue)
-![Model](https://img.shields.io/badge/Model-24--28M%20Params-green)
+[![Paper](https://img.shields.io/badge/Paper-HighPhytoSparseNet-brightgreen)](HighPhytoSparseNet__A_Lightweight_Multi_Head_Object_Detection_Model_for_Edge_Based_Agricultural_Applications.pdf)
+[![mAP@0.5](https://img.shields.io/badge/mAP@0.5-65.1%25-blue)](https://github.com/HamzaMehdi12/Phytonet_Model)
+[![GFLOPs](https://img.shields.io/badge/GFLOPs-0.5-green)](https://github.com/HamzaMehdi12/Phytonet_Model)
+[![Params](https://img.shields.io/badge/Params-3.8M-orange)](https://github.com/HamzaMehdi12/Phytonet_Model)
+[![FPS](https://img.shields.io/badge/FPS-85-red)](https://github.com/HamzaMehdi12/Phytonet_Model)
 
 ---
 
