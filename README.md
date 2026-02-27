@@ -10,4 +10,3 @@
 
 ---
 
-[HighPhytoSparseNet__A_Lightweight_Multi_Head_Object_Detection_Model_for_Edge_Based_Agricultural_Applications.pdf](https://github.com/user-attachments/files/25590477/HighPhytoSparseNet__A_Lightweight_Multi_Head_Object_Detection_Model_for_Edge_Based_Agricultural_Applications.pdf)
