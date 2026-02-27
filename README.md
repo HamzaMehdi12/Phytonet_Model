@@ -1,4 +1,4 @@
-# PhytoNetEdge 🌱
+# HighPhytoSparseNet 🌱
 
 <div align="center">
 
