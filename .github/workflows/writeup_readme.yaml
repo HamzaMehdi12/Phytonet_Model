@@ -1,0 +1,35 @@
+name: PDF Writeup to README
+on:
+  push:
+    paths:
+      - 'writeup.pdf'
+      - '.README.md'
+      - '.github/workflows/writeup_readme.yml'
+      
+jobs:
+  convert-pdf:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Convert PDF → Images → README
+      uses: contagon/PDFWriteupReadme@v1
+      env:
+        ORPHAN_BRANCH: images      # Images go here
+        QUALITY: 90               # Image quality (0-100)
+        
+    - name: Push updated README
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+        
+    - name: Commit README changes
+      run: |
+        git config user.name "GitHub Action"
+        git config user.email "action@github.com"
+        git add README.md
+        git commit -m "📄 Update README with PDF writeup" || exit 0
+        git push
