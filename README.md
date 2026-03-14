@@ -232,7 +232,7 @@
 |:------------:|:-------------:|
 | <img src="assets/Data_1.jpg" width="300"/> | <img src="assets/Data_2.jpg" width="300"/> |
 
-| Dense Cluster | Challenging Lighting |
+| Detection Cluster 1| Detectio Cluster 2|
 |:-------------:|:--------------------:|
 | <img src="assets/epoch_75.jpg" width="300"/> | <img src="assets/epoch_420.jpg" width="300"/> |
 
@@ -408,7 +408,7 @@ PhytoNetEdge/
 | Tomato | 27.9×16.5 | 24.0×14.5 | 224.0 |
 
 <div align="center">
-<img src="assets/dataset_samples.png" alt="Dataset Samples" width="700"/>
+<img src="assets/dataset.png" alt="Dataset Samples" width="700"/>
 </div>
 
 ---
