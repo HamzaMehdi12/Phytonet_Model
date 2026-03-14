@@ -234,7 +234,7 @@
 
 | Dense Cluster | Challenging Lighting |
 |:-------------:|:--------------------:|
-| <img src="assets/detection_cluster.jpg" width="300"/> | <img src="assets/detection_lighting.jpg" width="300"/> |
+| <img src="assets/epoch_75.jpg" width="300"/> | <img src="assets/epoch_420.jpg" width="300"/> |
 
 </div>
 
