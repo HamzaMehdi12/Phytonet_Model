@@ -408,7 +408,7 @@ PhytoNetEdge/
 | Tomato | 27.9×16.5 | 24.0×14.5 | 224.0 |
 
 <div align="center">
-<img src="assets/dataset.png" alt="Dataset Samples" width="700"/>
+<img src="assets/dataset.jpg" alt="Dataset Samples" width="700"/>
 </div>
 
 ---
