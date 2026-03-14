@@ -230,7 +230,7 @@
 
 | Indoor Scene | Outdoor Scene |
 |:------------:|:-------------:|
-| <img src="assets/detection_indoor.jpg" width="300"/> | <img src="assets/detection_outdoor.jpg" width="300"/> |
+| <img src="assets/Data_1.jpg" width="300"/> | <img src="assets/Data_2.jpg" width="300"/> |
 
 | Dense Cluster | Challenging Lighting |
 |:-------------:|:--------------------:|
