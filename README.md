@@ -12,7 +12,7 @@
 
 [**Paper**](https://link-to-paper) | [**Dataset**](https://link-to-dataset) | [**Demo**](#demo) | [**Citation**](#citation)
 
-<img src="assets/banner.png" alt="PhytoNetEdge Banner" width="800"/>
+<img src="assets/banner.jpg" alt="PhytoNetEdge Banner" width="800"/>
 
 </div>
 
